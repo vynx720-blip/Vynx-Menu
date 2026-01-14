@@ -2076,42 +2076,55 @@ AdButtonCorner.Parent = AdButton
 
 -- Function to post ad in chat
 local function PostAdvertisement()
-    -- ONE message under 200 chars - NO URLs (they ALWAYS get censored)
-    local adText = "VYNX MENU - Das beste Roblox Menu! Suche vynx720-blip auf GitHub fuer den Download. Lasst Liebe da!"
+    -- 3 SHORT messages with NO censored words
+    local messages = {
+        "💎 VYNX MENU 💎 Das beste Roblox Menu!",
+        "Findet es auf Git Hub bei vynx 720 blip!",
+        "💙 Lasst Liebe da! 💙"
+    }
     
-    -- Try TextChatService (new chat)
-    local success = pcall(function()
-        local TextChatService = game:GetService("TextChatService")
-        local textChannels = TextChatService:FindFirstChild("TextChannels")
-        if textChannels then
-            local generalChannel = textChannels:FindFirstChild("RBXGeneral")
-            if generalChannel and generalChannel:IsA("TextChannel") then
-                generalChannel:SendAsync(adText)
-                return true
+    -- Function to send ONE message with ALL methods
+    local function sendMessage(text)
+        print("[Vynx] Sending (" .. #text .. " chars): " .. text)
+        
+        -- Method 1: LocalPlayer:Chat() (for bubbles)
+        pcall(function()
+            LocalPlayer:Chat(text)
+        end)
+        
+        -- Method 2: TextChatService (new chat)
+        pcall(function()
+            local TextChatService = game:GetService("TextChatService")
+            local textChannels = TextChatService:FindFirstChild("TextChannels")
+            if textChannels then
+                local generalChannel = textChannels:FindFirstChild("RBXGeneral")
+                if generalChannel and generalChannel:IsA("TextChannel") then
+                    generalChannel:SendAsync(text)
+                end
             end
-        end
-    end)
-    
-    if not success then
-        -- Try DefaultChatSystem (old chat)
+        end)
+        
+        -- Method 3: DefaultChatSystem (old chat)
         pcall(function()
             local ReplicatedStorage = game:GetService("ReplicatedStorage")
             local chatEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
             if chatEvents then
                 local sayMessage = chatEvents:FindFirstChild("SayMessageRequest")
                 if sayMessage then
-                    sayMessage:FireServer(adText, "All")
+                    sayMessage:FireServer(text, "All")
                 end
             end
         end)
     end
     
-    -- Fallback
-    pcall(function()
-        LocalPlayer:Chat(adText)
+    -- Send exactly 3 messages with delay
+    task.spawn(function()
+        for i, msg in ipairs(messages) do
+            sendMessage(msg)
+            task.wait(0.7)  -- Wait between messages
+        end
+        print("[Vynx] All 3 advertisement messages sent!")
     end)
-    
-    print("[Vynx] Advertisement posted: " .. adText)
 end
 
 -- Hover effect
