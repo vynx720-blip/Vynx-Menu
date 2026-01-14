@@ -920,7 +920,7 @@ function InvisibleSystem:CreateClone()
                 
                 clonedPart.Anchored = false
                 clonedPart.Massless = false  -- Normal mass for better physics
-                clonedPart.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5, 1, 1)  -- Better friction
+                clonedPart.CustomPhysicalProperties = PhysicalProperties.new(1.0, 0.3, 0, 1, 1)  -- Default density, low bounce
                 
                 for _, obj in pairs(clonedPart:GetDescendants()) do
                     if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
@@ -949,8 +949,8 @@ function InvisibleSystem:CreateClone()
     
     -- Ensure proper collision
     cloneHRP.CanCollide = true
-    cloneHRP.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5, 1, 1)  -- Better friction
-    cloneHRP.CFrame = humanoidRootPart.CFrame + Vector3.new(0, 0.5, 0)  -- Slight offset above ground
+    cloneHRP.CustomPhysicalProperties = PhysicalProperties.new(1.0, 0.3, 0, 1, 1)  -- Default density, low bounce
+    cloneHRP.CFrame = humanoidRootPart.CFrame + Vector3.new(0, 0.2, 0)  -- Small offset to ensure spawns above ground
     
     local humanoid = Instance.new("Humanoid")
     humanoid.DisplayName = ""
@@ -1175,19 +1175,8 @@ function InvisibleSystem:Disable()
     
     local targetCFrame = nil
     if cloneRoot and cloneRoot.Parent and cloneHumanoid then
-        local cloneHipHeight = cloneHumanoid.HipHeight or 0
-        local characterHipHeight = 0
-        
-        local character = LocalPlayer.Character
-        if character then
-            local realHumanoid = character:FindFirstChild("Humanoid")
-            if realHumanoid then
-                characterHipHeight = realHumanoid.HipHeight or 0
-            end
-        end
-        
-        local heightDifference = cloneHipHeight - characterHipHeight
-        targetCFrame = cloneRoot.CFrame - Vector3.new(0, heightDifference, 0)
+        -- Take clone position but subtract spawn offset to get correct ground position
+        targetCFrame = cloneRoot.CFrame - Vector3.new(0, 0.2, 0)
     else
         targetCFrame = savedCFrame or CFrame.new(0, 50, 0)
     end
@@ -1214,19 +1203,28 @@ function InvisibleSystem:Disable()
     if not humanoid then return end
     
     for _, obj in pairs(humanoidRootPart:GetChildren()) do
-        if obj:IsA("BodyPosition") or obj:IsA("BodyVelocity") or obj:IsA("BodyGyro") then
+        if obj:IsA("BodyMover") then
+            -- Remove ALL BodyMovers (BodyPosition, BodyVelocity, BodyGyro, BodyAngularVelocity, etc.)
             obj:Destroy()
         end
     end
     
+    -- Temporarily anchor to stop all movement
+    humanoidRootPart.Anchored = true
+    
+    -- Set position
     for i = 1, 5 do
         humanoidRootPart.CFrame = targetCFrame
     end
     
+    -- Reset ALL velocities
     humanoidRootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
     humanoidRootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
     humanoidRootPart.Velocity = Vector3.new(0, 0, 0)
     humanoidRootPart.RotVelocity = Vector3.new(0, 0, 0)
+    
+    -- Unanchor
+    humanoidRootPart.Anchored = false
     
     humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
     humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
@@ -1234,20 +1232,41 @@ function InvisibleSystem:Disable()
     humanoid.AutoRotate = true
     humanoid.PlatformStand = false
     humanoid.Health = humanoid.MaxHealth
+    humanoid.HipHeight = 2  -- Same as clone to prevent position issues
     
     humanoid:ChangeState(Enum.HumanoidStateType.Running)
+    
+    -- Wait a frame for physics to settle
+    task.wait(0.1)
     
     for _, part in pairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
             if part.Name == "HumanoidRootPart" then
                 part.Transparency = 1
+                part.CanCollide = true  -- HRP needs collision
             else
                 part.Transparency = 0
+                part.CanCollide = false  -- Other parts NO collision
             end
-            part.CanCollide = true
             part.Massless = false
+            part.CustomPhysicalProperties = nil  -- Reset physics to default
+            
+            -- Final velocity reset for ALL parts
+            part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            if part.Name == "HumanoidRootPart" then
+                part.Velocity = Vector3.new(0, 0, 0)
+                part.RotVelocity = Vector3.new(0, 0, 0)
+            end
         end
     end
+    
+    -- Final humanoid state check
+    humanoid.PlatformStand = false
+    humanoid.Sit = false
+    humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+    task.wait(0.1)
+    humanoid:ChangeState(Enum.HumanoidStateType.Running)
     
     Camera.CameraSubject = humanoid
     
@@ -1571,11 +1590,14 @@ ContentArea.BackgroundTransparency = 1
 ContentArea.Parent = MainContainer
 
 -- Sidebar
-local Sidebar = Instance.new("Frame")
+local Sidebar = Instance.new("ScrollingFrame")
 Sidebar.Size = UDim2.new(0, 200, 1, 0)
 Sidebar.BackgroundColor3 = Settings.Theme.CardColor
 Sidebar.BackgroundTransparency = 0.4
 Sidebar.BorderSizePixel = 0
+Sidebar.ScrollBarThickness = 4
+Sidebar.ScrollBarImageColor3 = Settings.Theme.AccentPrimary
+Sidebar.CanvasSize = UDim2.new(0, 0, 0, 0)
 Sidebar.Parent = ContentArea
 
 local SidebarCorner = Instance.new("UICorner")
@@ -1587,10 +1609,16 @@ NavLayout.SortOrder = Enum.SortOrder.LayoutOrder
 NavLayout.Padding = UDim.new(0, 8)
 NavLayout.Parent = Sidebar
 
+-- Auto-update canvas size
+NavLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    Sidebar.CanvasSize = UDim2.new(0, 0, 0, NavLayout.AbsoluteContentSize.Y + 30)
+end)
+
 local NavPadding = Instance.new("UIPadding")
 NavPadding.PaddingTop = UDim.new(0, 15)
 NavPadding.PaddingLeft = UDim.new(0, 15)
 NavPadding.PaddingRight = UDim.new(0, 15)
+NavPadding.PaddingBottom = UDim.new(0, 15)
 NavPadding.Parent = Sidebar
 
 -- Main Content
@@ -2017,6 +2045,97 @@ CreateFeatureCard("InvisibleMode", "👻", "Invisible Mode", "Walking clone", 4)
 CreateFeatureCard("Noclip", "🚪", "Noclip", "Walk through walls", 5)
 CreateFeatureCard("SpinCharacter", "🌀", "Spin Character", "Rotate continuously", 6)
 CreateFeatureCard("Ragdoll", "🤸", "Ragdoll", "Fall like a ragdoll", 7)
+
+-- AD BUTTON CARD
+local AdCard = Instance.new("Frame")
+AdCard.Size = UDim2.new(1, 0, 0, 100)
+AdCard.BackgroundColor3 = Settings.Theme.Background
+AdCard.BackgroundTransparency = 0.3
+AdCard.BorderSizePixel = 0
+AdCard.LayoutOrder = 0.5  -- Ganz oben!
+AdCard.Parent = CharacterPage
+
+local AdCardCorner = Instance.new("UICorner")
+AdCardCorner.CornerRadius = UDim.new(0, 12)
+AdCardCorner.Parent = AdCard
+
+local AdButton = Instance.new("TextButton")
+AdButton.Size = UDim2.new(1, -30, 1, -30)
+AdButton.Position = UDim2.new(0, 15, 0, 15)
+AdButton.BackgroundColor3 = Settings.Theme.AccentPrimary
+AdButton.Text = "📢  Post Advertisement"
+AdButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+AdButton.TextSize = 18
+AdButton.Font = Enum.Font.GothamBold
+AdButton.BorderSizePixel = 0
+AdButton.Parent = AdCard
+
+local AdButtonCorner = Instance.new("UICorner")
+AdButtonCorner.CornerRadius = UDim.new(0, 10)
+AdButtonCorner.Parent = AdButton
+
+-- Function to post ad in chat
+local function PostAdvertisement()
+    local adText = [[━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    💎 VYNX MENU 💎
+    Das beste Menu für Roblox!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📜 Loadstring:
+loadstring(game:HttpGet("https://raw.githubusercontent.com/vynx720-blip/Vynx-Menu/refs/heads/main/Vynx%20Menu%20Script",true))()
+
+💙 Lasst Liebe da! 💙
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━]]
+
+    -- Try NEW TextChatService (modern chat)
+    local success1 = pcall(function()
+        local TextChatService = game:GetService("TextChatService")
+        local textChannels = TextChatService:FindFirstChild("TextChannels")
+        if textChannels then
+            local generalChannel = textChannels:FindFirstChild("RBXGeneral")
+            if generalChannel and generalChannel:IsA("TextChannel") then
+                generalChannel:SendAsync(adText)
+                print("[Vynx] Advertisement posted via TextChatService!")
+                return true
+            end
+        end
+    end)
+    
+    -- Fallback: OLD DefaultChatSystem
+    if not success1 then
+        pcall(function()
+            local ReplicatedStorage = game:GetService("ReplicatedStorage")
+            local chatEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+            if chatEvents then
+                local sayMessage = chatEvents:FindFirstChild("SayMessageRequest")
+                if sayMessage then
+                    sayMessage:FireServer(adText, "All")
+                    print("[Vynx] Advertisement posted via DefaultChatSystem!")
+                end
+            end
+        end)
+    end
+    
+    -- Fallback 2: Try Players.LocalPlayer:Chat()
+    pcall(function()
+        LocalPlayer:Chat(adText)
+        print("[Vynx] Advertisement posted via LocalPlayer:Chat()!")
+    end)
+end
+
+-- Hover effect
+AdButton.MouseEnter:Connect(function()
+    TweenService:Create(AdButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(120, 170, 255)}):Play()
+end)
+
+AdButton.MouseLeave:Connect(function()
+    TweenService:Create(AdButton, TweenInfo.new(0.2), {BackgroundColor3 = Settings.Theme.AccentPrimary}):Play()
+end)
+
+-- Click handler
+AdButton.MouseButton1Click:Connect(function()
+    PostAdvertisement()
+end)
 
 -- Noclip & Spin Loops
 local noclipWasEnabled = false
@@ -4355,8 +4474,9 @@ local function SwitchTab(tabName)
     MenuUsersPage.Visible = tabName == "MenuUsers"
     SettingsPage.Visible = tabName == "Settings"
     
-    -- Close PlayerInfoSidebar when leaving Players/MenuUsers tab
-    if tabName ~= "Players" and tabName ~= "MenuUsers" and PlayerInfoSidebar.Visible then
+    -- Close PlayerInfoSidebar when switching tabs
+    -- ALWAYS close sidebar when switching to a different tab
+    if PlayerInfoSidebar.Visible then
         PlayerInfoSidebar.Visible = false
         if ViewingPlayer then
             ViewingPlayer = nil
@@ -4366,16 +4486,22 @@ local function SwitchTab(tabName)
     
     -- Update player list when switching to MenuUsers
     if tabName == "MenuUsers" then
-        UpdateMenuUsersList("")
+        pcall(function()
+            UpdateMenuUsersList("")
+        end)
     end
     
     -- Update nav buttons
     for _, btn in pairs(Sidebar:GetChildren()) do
         if btn:IsA("TextButton") then
-            local isActive = btn.Name == tabName .. "Btn"
+            -- Simple check: does button name match pattern?
+            local isActive = (btn.Name == tabName .. "Btn")
+            
+            -- Set colors
             btn.BackgroundTransparency = isActive and 0.3 or 1
             btn.BackgroundColor3 = isActive and Settings.Theme.AccentPrimary or Settings.Theme.CardColor
             
+            -- Update text colors
             for _, child in pairs(btn:GetChildren()) do
                 if child:IsA("TextLabel") then
                     child.TextColor3 = isActive and Settings.Theme.TextPrimary or Settings.Theme.TextSecondary
@@ -4430,6 +4556,7 @@ end)
 local PlayersBtn = Instance.new("TextButton")
 PlayersBtn.Name = "PlayersBtn"
 PlayersBtn.Size = UDim2.new(1, 0, 0, 45)
+PlayersBtn.BackgroundColor3 = Settings.Theme.CardColor  -- Set default color
 PlayersBtn.BackgroundTransparency = 1
 PlayersBtn.Text = ""
 PlayersBtn.AutoButtonColor = false
@@ -4470,6 +4597,7 @@ end)
 local ESPBtn = Instance.new("TextButton")
 ESPBtn.Name = "ESPBtn"
 ESPBtn.Size = UDim2.new(1, 0, 0, 45)
+ESPBtn.BackgroundColor3 = Settings.Theme.CardColor  -- Set default color
 ESPBtn.BackgroundTransparency = 1
 ESPBtn.Text = ""
 ESPBtn.AutoButtonColor = false
@@ -4510,6 +4638,7 @@ end)
 local MenuUsersBtn = Instance.new("TextButton")
 MenuUsersBtn.Name = "MenuUsersBtn"
 MenuUsersBtn.Size = UDim2.new(1, 0, 0, 45)
+MenuUsersBtn.BackgroundColor3 = Settings.Theme.CardColor  -- Set default color
 MenuUsersBtn.BackgroundTransparency = 1
 MenuUsersBtn.Text = ""
 MenuUsersBtn.AutoButtonColor = false
@@ -4550,6 +4679,7 @@ end)
 local SettingsBtn = Instance.new("TextButton")
 SettingsBtn.Name = "SettingsBtn"
 SettingsBtn.Size = UDim2.new(1, 0, 0, 45)
+SettingsBtn.BackgroundColor3 = Settings.Theme.CardColor  -- Set default color
 SettingsBtn.BackgroundTransparency = 1
 SettingsBtn.Text = ""
 SettingsBtn.AutoButtonColor = false
