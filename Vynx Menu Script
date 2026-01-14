@@ -2076,33 +2076,24 @@ AdButtonCorner.Parent = AdButton
 
 -- Function to post ad in chat
 local function PostAdvertisement()
-    local adText = [[━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    💎 VYNX MENU 💎
-    Das beste Menu für Roblox!
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📜 Loadstring:
-loadstring(game:HttpGet("https://raw.githubusercontent.com/vynx720-blip/Vynx-Menu/refs/heads/main/Vynx%20Menu%20Script",true))()
-
-💙 Lasst Liebe da! 💙
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━]]
-
-    -- Try NEW TextChatService (modern chat)
-    local success1 = pcall(function()
+    -- ONE message under 200 chars - NO URLs (they ALWAYS get censored)
+    local adText = "VYNX MENU - Das beste Roblox Menu! Suche vynx720-blip auf GitHub fuer den Download. Lasst Liebe da!"
+    
+    -- Try TextChatService (new chat)
+    local success = pcall(function()
         local TextChatService = game:GetService("TextChatService")
         local textChannels = TextChatService:FindFirstChild("TextChannels")
         if textChannels then
             local generalChannel = textChannels:FindFirstChild("RBXGeneral")
             if generalChannel and generalChannel:IsA("TextChannel") then
                 generalChannel:SendAsync(adText)
-                print("[Vynx] Advertisement posted via TextChatService!")
                 return true
             end
         end
     end)
     
-    -- Fallback: OLD DefaultChatSystem
-    if not success1 then
+    if not success then
+        -- Try DefaultChatSystem (old chat)
         pcall(function()
             local ReplicatedStorage = game:GetService("ReplicatedStorage")
             local chatEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
@@ -2110,17 +2101,17 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/vynx720-blip/Vynx-Men
                 local sayMessage = chatEvents:FindFirstChild("SayMessageRequest")
                 if sayMessage then
                     sayMessage:FireServer(adText, "All")
-                    print("[Vynx] Advertisement posted via DefaultChatSystem!")
                 end
             end
         end)
     end
     
-    -- Fallback 2: Try Players.LocalPlayer:Chat()
+    -- Fallback
     pcall(function()
         LocalPlayer:Chat(adText)
-        print("[Vynx] Advertisement posted via LocalPlayer:Chat()!")
     end)
+    
+    print("[Vynx] Advertisement posted: " .. adText)
 end
 
 -- Hover effect
