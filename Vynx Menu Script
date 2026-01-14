@@ -5038,56 +5038,84 @@ function BannerSystem:CreateSignalPart()
     end
     
     local char = LocalPlayer.Character
-    if not char then return end
+    if not char then 
+        print("[Vynx Banner] No character for signal")
+        return 
+    end
     
     local head = char:FindFirstChild("Head")
-    if not head then return end
+    if not head then 
+        print("[Vynx Banner] No head for signal")
+        return 
+    end
     
-    -- Create signal (invisible marker)
-    local signal = Instance.new("Part")
+    -- Create signal as Attachment (better replication than Part)
+    local signal = Instance.new("Attachment")
     signal.Name = "VynxMenuSignal_" .. LocalPlayer.UserId
-    signal.Size = Vector3.new(0.1, 0.1, 0.1)
-    signal.Transparency = 1
-    signal.CanCollide = false
-    signal.Anchored = false
     signal.Parent = head
     
-    local weld = Instance.new("WeldConstraint")
-    weld.Part0 = head
-    weld.Part1 = signal
-    weld.Parent = signal
-    
     self.signalPart = signal
-    print("[Vynx Banner] Signal created")
+    print("[Vynx Banner] ✅ Signal created: " .. signal.Name .. " in " .. head:GetFullName())
+    
+    -- Debug: List all children in head
+    print("[Vynx Banner] Head contents:")
+    for _, child in pairs(head:GetChildren()) do
+        if string.find(child.Name, "VynxMenuSignal") then
+            print("  - " .. child.Name .. " (" .. child.ClassName .. ")")
+        end
+    end
 end
 
 function BannerSystem:ScanForMenuUsers()
     -- Scan all players for signal parts
+    local foundCount = 0
+    local scanDetails = {}
+    
     for _, player in pairs(Players:GetPlayers()) do
-        local char = player.Character
-        if char then
-            local head = char:FindFirstChild("Head")
-            if head then
-                local signal = head:FindFirstChild("VynxMenuSignal_" .. player.UserId)
-                
-                if signal then
-                    -- Has menu active - create banner
-                    if not self.banners[player.UserId] then
-                        self:CreateBanner(player)
-                    end
-                else
-                    -- No signal - remove banner
-                    if self.banners[player.UserId] then
-                        self:RemoveBanner(player.UserId)
+        if player ~= LocalPlayer then  -- Don't scan self
+            local char = player.Character
+            if char then
+                local head = char:FindFirstChild("Head")
+                if head then
+                    local signalName = "VynxMenuSignal_" .. player.UserId
+                    local signal = head:FindFirstChild(signalName)
+                    
+                    table.insert(scanDetails, {
+                        name = player.Name,
+                        hasSignal = signal ~= nil,
+                        signalType = signal and signal.ClassName or "none"
+                    })
+                    
+                    if signal then
+                        foundCount = foundCount + 1
+                        -- Has menu active - create banner
+                        if not self.banners[player.UserId] then
+                            print("[Vynx Banner] 📢 Found menu user: " .. player.Name)
+                            self:CreateBanner(player)
+                        end
+                    else
+                        -- No signal - remove banner if exists
+                        if self.banners[player.UserId] then
+                            print("[Vynx Banner] Lost menu user: " .. player.Name)
+                            self:RemoveBanner(player.UserId)
+                        end
                     end
                 end
-            end
-        else
-            -- No character - remove banner
-            if self.banners[player.UserId] then
-                self:RemoveBanner(player.UserId)
+            else
+                -- No character - remove banner
+                if self.banners[player.UserId] then
+                    self:RemoveBanner(player.UserId)
+                end
             end
         end
+    end
+    
+    if #scanDetails > 0 then
+        print("[Vynx Banner] Scan results:")
+        for _, detail in ipairs(scanDetails) do
+            print("  " .. detail.name .. ": " .. (detail.hasSignal and ("✅ " .. detail.signalType) or "❌ No signal"))
+        end
+        print("[Vynx Banner] Total menu users: " .. foundCount)
     end
 end
 
