@@ -40,6 +40,7 @@ local FeatureStates = {
     Noclip = {enabled = false, key = Enum.KeyCode.N, value = 0, maxValue = 0},
     SpinCharacter = {enabled = false, key = Enum.KeyCode.R, value = 5, maxValue = 100},
     Ragdoll = {enabled = false, key = Enum.KeyCode.G, value = 0, maxValue = 0},
+    SpaceMode = {enabled = false, key = Enum.KeyCode.Z, value = 20, maxValue = 100},
     ESPHighlight = {enabled = false, key = Enum.KeyCode.E, value = 50, maxValue = 100, color = Color3.fromRGB(255, 0, 0)},
     ESPNametags = {enabled = false, key = Enum.KeyCode.T, value = 14, maxValue = 30, color = Color3.fromRGB(255, 255, 255)},
 }
@@ -298,6 +299,381 @@ function RagdollSystem:Disable()
     end
     
     self.originalJoints = {}
+    self.enabled = false
+end
+
+-- SPACE MODE SYSTEM (Zero Gravity Flight)
+local SpaceModeSystem = {
+    enabled = false,
+    bodyVelocity = nil,
+    connection = nil,
+    velocity = Vector3.zero,
+    touchConnections = {}
+}
+
+-- STABLE SPACE MODE - Besserer Bounce, Rotation überall, kein Kleben!
+-- Geschwindigkeit bleibt erhalten, kein Decken-Bug, viel stabiler!
+
+function SpaceModeSystem:Enable()
+    if self.enabled then return end
+    
+    local character = LocalPlayer.Character
+    if not character then return end
+    
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not hrp then return end
+    
+    print("[Vynx] 🚀 STABLE SPACE MODE - Better bounce & rotation!")
+    
+    humanoid.PlatformStand = true
+    
+    local bodyVel = Instance.new("BodyVelocity")
+    bodyVel.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bodyVel.Velocity = Vector3.zero
+    bodyVel.Parent = hrp
+    self.bodyVelocity = bodyVel
+    
+    -- Balanced physics
+    for _, part in pairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = true
+            part.CustomPhysicalProperties = PhysicalProperties.new(
+                2.0,   -- Density: Heavy
+                0.03,  -- Friction
+                0.8,   -- Elasticity: Higher for better bounce! ✨
+                1, 1
+            )
+        end
+    end
+    
+    local YOUR_MASS = 2.0
+    local TYPICAL_PLAYER_MASS = 0.7
+    
+    -- Improved collision handler with better bounce preservation!
+    for _, part in pairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local conn = part.Touched:Connect(function(hit)
+                if hit.Parent == character or hit:IsDescendantOf(character) then
+                    return
+                end
+                
+                local otherVelocity = Vector3.zero
+                local otherMass = 0.7
+                local isPlayer = false
+                
+                local otherPlayer = Players:GetPlayerFromCharacter(hit.Parent)
+                if otherPlayer then
+                    isPlayer = true
+                    local otherHRP = hit.Parent:FindFirstChild("HumanoidRootPart")
+                    if otherHRP then
+                        otherVelocity = otherHRP.AssemblyLinearVelocity or otherHRP.Velocity
+                        if otherHRP.CustomPhysicalProperties then
+                            otherMass = otherHRP.CustomPhysicalProperties.Density
+                        else
+                            otherMass = TYPICAL_PLAYER_MASS
+                        end
+                    end
+                else
+                    if hit:IsA("BasePart") then
+                        otherVelocity = hit.AssemblyLinearVelocity or hit.Velocity
+                        if hit.CustomPhysicalProperties then
+                            otherMass = hit.CustomPhysicalProperties.Density
+                        end
+                    end
+                end
+                
+                local myVelocity = self.velocity
+                local relativeVelocity = myVelocity - otherVelocity
+                local impactSpeed = relativeVelocity.Magnitude
+                
+                if impactSpeed < 1 then return end
+                
+                local collisionNormal = (hrp.Position - hit.Position).Unit
+                local verticalComponent = math.abs(collisionNormal.Y)
+                local isVerticalCollision = verticalComponent > 0.7
+                
+                -- Mass-based damping
+                local massRatio = otherMass / (YOUR_MASS + otherMass)
+                local dampingFactor = math.clamp(massRatio, 0.3, 0.85)  -- Better range! ✨
+                
+                if isPlayer then
+                    -- Players: Gentle but keep some speed
+                    local cappedImpactSpeed = math.min(impactSpeed, 50)  -- Higher cap!
+                    dampingFactor = dampingFactor * 0.5  -- 50% instead of 30% ✨
+                    
+                    local dotProduct = relativeVelocity:Dot(collisionNormal)
+                    local reflection = relativeVelocity - (2 * dotProduct * collisionNormal)
+                    
+                    local bounceStrength = cappedImpactSpeed * dampingFactor
+                    self.velocity = otherVelocity + (reflection.Unit * bounceStrength)
+                    
+                    print("[Vynx] 👤 Player! In:", math.floor(impactSpeed), "→", math.floor(bounceStrength))
+                else
+                    -- Parts/Walls: Keep MORE speed! ✨
+                    local dotProduct = relativeVelocity:Dot(collisionNormal)
+                    local reflection = relativeVelocity - (2 * dotProduct * collisionNormal)
+                    
+                    -- BETTER energy retention (85% instead of ~50%)
+                    local bounceStrength = impactSpeed * 0.85  -- Keep 85% speed! ✨
+                    self.velocity = otherVelocity + (reflection.Unit * bounceStrength)
+                    
+                    print("[Vynx] 🧱 Part! In:", math.floor(impactSpeed), "→", math.floor(bounceStrength), "✓")
+                end
+                
+                -- IMPROVED ROTATION: Always some rotation, but less for vertical!
+                local impactPoint = hit.Position
+                local impactOffset = impactPoint - hrp.Position
+                local torqueAxis = impactOffset:Cross(relativeVelocity)
+                
+                local spinStrength = math.clamp(impactSpeed / 12, 0.8, 10)  -- Better range!
+                
+                -- Less reduction for vertical (was 0.15, now 0.4) ✨
+                if isVerticalCollision then
+                    spinStrength = spinStrength * 0.4  -- Still spin on floor/ceiling!
+                end
+                
+                -- Mass-based spin reduction
+                local massSpinDamping = TYPICAL_PLAYER_MASS / YOUR_MASS
+                spinStrength = spinStrength * massSpinDamping
+                
+                -- Less reduction for player collisions (was 0.5, now 0.7) ✨
+                if isPlayer then
+                    spinStrength = spinStrength * 0.7
+                end
+                
+                if torqueAxis.Magnitude > 0.1 then
+                    hrp.AssemblyAngularVelocity = hrp.AssemblyAngularVelocity + (torqueAxis.Unit * spinStrength)
+                else
+                    -- Even center hits get SOME spin
+                    local randomAxis = Vector3.new(math.random(-1, 1), math.random(-1, 1), math.random(-1, 1)).Unit
+                    hrp.AssemblyAngularVelocity = hrp.AssemblyAngularVelocity + (randomAxis * (spinStrength * 0.5))
+                end
+            end)
+            table.insert(self.touchConnections, conn)
+        end
+    end
+    
+    self.velocity = Vector3.zero
+    local thrust = FeatureStates.SpaceMode.value
+    
+    self.connection = RunService.Heartbeat:Connect(function(dt)
+        if not character or not humanoid or not hrp or humanoid.Health <= 0 then
+            self:Disable()
+            return
+        end
+        
+        thrust = FeatureStates.SpaceMode.value
+        local cam = workspace.CurrentCamera
+        local camCF = cam.CFrame
+        local moveDir = Vector3.new(0, 0, 0)
+        
+        -- WASD Controls
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + camCF.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - camCF.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - camCF.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + camCF.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDir = moveDir - Vector3.new(0, 1, 0) end
+        
+        -- Q/E for manual spin
+        if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
+            hrp.AssemblyAngularVelocity = hrp.AssemblyAngularVelocity + Vector3.new(0, 8 * dt, 0)
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.E) then
+            hrp.AssemblyAngularVelocity = hrp.AssemblyAngularVelocity + Vector3.new(0, -8 * dt, 0)
+        end
+        
+        -- Apply thrust
+        if moveDir.Magnitude > 0 then
+            moveDir = moveDir.Unit
+            self.velocity = self.velocity + (moveDir * thrust * dt * 6)
+        end
+        
+        -- Realistic space dampening
+        self.velocity = self.velocity * 0.9997
+        hrp.AssemblyAngularVelocity = hrp.AssemblyAngularVelocity * 0.993
+        
+        -- Clamp max speed
+        local maxSpeed = 200
+        if self.velocity.Magnitude > maxSpeed then
+            self.velocity = self.velocity.Unit * maxSpeed
+        end
+        
+        -- Apply velocity
+        if self.bodyVelocity then
+            self.bodyVelocity.Velocity = self.velocity
+        end
+        
+        -- Predictive collision for walls - BETTER bounce retention!
+        local lookAhead = 1.5
+        
+        if self.velocity.Magnitude > 5 then
+            local ray = Ray.new(hrp.Position, self.velocity.Unit * lookAhead)
+            local hit, pos, normal = workspace:FindPartOnRayWithIgnoreList(ray, {character})
+            
+            if hit then
+                local otherPlayer = Players:GetPlayerFromCharacter(hit.Parent)
+                
+                if not otherPlayer then
+                    local wallVelocity = Vector3.zero
+                    
+                    if hit:IsA("BasePart") then
+                        wallVelocity = hit.AssemblyLinearVelocity or hit.Velocity
+                    end
+                    
+                    local relativeVel = self.velocity - wallVelocity
+                    local impactSpeed = relativeVel.Magnitude
+                    
+                    local verticalComponent = math.abs(normal.Y)
+                    local isVerticalCollision = verticalComponent > 0.7
+                    
+                    local dotProduct = relativeVel:Dot(normal)
+                    local reflection = relativeVel - (2 * dotProduct * normal)
+                    
+                    -- Keep 85% speed! ✨
+                    local bounceStrength = impactSpeed * 0.85
+                    self.velocity = wallVelocity + (reflection.Unit * bounceStrength)
+                    
+                    local impactOffset = pos - hrp.Position
+                    local torqueAxis = impactOffset:Cross(relativeVel)
+                    local spinStrength = math.clamp(impactSpeed / 12, 0.8, 10)
+                    
+                    if isVerticalCollision then
+                        spinStrength = spinStrength * 0.4
+                    end
+                    spinStrength = spinStrength * (TYPICAL_PLAYER_MASS / YOUR_MASS)
+                    
+                    if torqueAxis.Magnitude > 0.1 then
+                        hrp.AssemblyAngularVelocity = hrp.AssemblyAngularVelocity + (torqueAxis.Unit * spinStrength)
+                    end
+                end
+            end
+        end
+        
+        -- IMPROVED Anti-Clip System - NO CEILING STICK!
+        local legParts = {
+            character:FindFirstChild("Left Leg") or character:FindFirstChild("LeftLowerLeg"),
+            character:FindFirstChild("Right Leg") or character:FindFirstChild("RightLowerLeg"),
+            character:FindFirstChild("LeftUpperLeg"),
+            character:FindFirstChild("RightUpperLeg"),
+            character:FindFirstChild("LeftFoot"),
+            character:FindFirstChild("RightFoot")
+        }
+        
+        local needsFloorPush = false
+        local lowestDistance = math.huge
+        
+        -- Check legs clipping through FLOOR
+        for _, legPart in pairs(legParts) do
+            if legPart and legPart:IsA("BasePart") then
+                local rayDown = Ray.new(legPart.Position, Vector3.new(0, -5, 0))
+                local hitGround, groundPos = workspace:FindPartOnRayWithIgnoreList(rayDown, {character})
+                
+                if hitGround then
+                    local distanceToGround = (legPart.Position - groundPos).Magnitude
+                    
+                    if distanceToGround < 1.2 then  -- Tighter threshold ✨
+                        needsFloorPush = true
+                        lowestDistance = math.min(lowestDistance, distanceToGround)
+                    end
+                end
+            end
+        end
+        
+        -- Check HRP distance to floor
+        local rayDownHRP = Ray.new(hrp.Position, Vector3.new(0, -10, 0))
+        local hitGroundHRP, groundPosHRP = workspace:FindPartOnRayWithIgnoreList(rayDownHRP, {character})
+        
+        if hitGroundHRP then
+            local distanceToGroundHRP = (hrp.Position - groundPosHRP).Magnitude
+            
+            if distanceToGroundHRP < 3.0 then  -- Tighter threshold ✨
+                needsFloorPush = true
+                lowestDistance = math.min(lowestDistance, distanceToGroundHRP)
+            end
+        end
+        
+        -- NEW: Check for CEILING (prevent sticking!)
+        local rayUp = Ray.new(hrp.Position, Vector3.new(0, 5, 0))
+        local hitCeiling, ceilingPos = workspace:FindPartOnRayWithIgnoreList(rayUp, {character})
+        
+        if hitCeiling then
+            local distanceToCeiling = (ceilingPos - hrp.Position).Magnitude
+            
+            -- If too close to ceiling AND moving up, push DOWN! ✨
+            if distanceToCeiling < 2.5 and self.velocity.Y > 0 then
+                self.velocity = Vector3.new(self.velocity.X, -5, self.velocity.Z)  -- Push down!
+                print("[Vynx] ⬇️ Ceiling detected! Pushing down")
+            end
+        end
+        
+        -- Apply floor push if needed (LESS aggressive!) ✨
+        if needsFloorPush then
+            local pushStrength = math.clamp(12 - (lowestDistance * 2), 6, 15)  -- Softer range!
+            self.velocity = self.velocity + Vector3.new(0, pushStrength, 0)
+            
+            -- Smaller CFrame push
+            hrp.CFrame = hrp.CFrame + Vector3.new(0, 0.1, 0)  -- Was 0.2, now 0.1 ✨
+        end
+    end)
+    
+    self.enabled = true
+    print("[Vynx] ✅ STABLE SPACE MODE ACTIVE!")
+    print("    - Bounce: 85% speed retention!")
+    print("    - Floor rotation: 40% (not 0!)")
+    print("    - Ceiling: Anti-stick system!")
+    print("    - Damping: Less aggressive")
+end
+
+function SpaceModeSystem:Disable()
+    if not self.enabled then return end
+    
+    print("[Vynx] Space Mode disabled")
+    
+    if self.connection then
+        self.connection:Disconnect()
+        self.connection = nil
+    end
+    
+    for _, conn in pairs(self.touchConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    self.touchConnections = {}
+    
+    if self.bodyVelocity then
+        self.bodyVelocity:Destroy()
+        self.bodyVelocity = nil
+    end
+    
+    local character = LocalPlayer.Character
+    if character then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CustomPhysicalProperties = nil
+                if part.Name == "HumanoidRootPart" then
+                    part.CanCollide = true
+                else
+                    part.CanCollide = false
+                end
+            end
+        end
+        
+        if humanoid then
+            humanoid.PlatformStand = false
+            humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+        
+        if hrp then
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end
+    end
+    
+    self.velocity = Vector3.zero
     self.enabled = false
 end
 
@@ -2045,6 +2421,7 @@ CreateFeatureCard("InvisibleMode", "👻", "Invisible Mode", "Walking clone", 4)
 CreateFeatureCard("Noclip", "🚪", "Noclip", "Walk through walls", 5)
 CreateFeatureCard("SpinCharacter", "🌀", "Spin Character", "Rotate continuously", 6)
 CreateFeatureCard("Ragdoll", "🤸", "Ragdoll", "Fall like a ragdoll", 7)
+CreateFeatureCard("SpaceMode", "🚀", "Space Mode", "Zero gravity flight", 8)
 
 -- AD BUTTON CARD
 local AdCard = Instance.new("Frame")
@@ -2281,6 +2658,12 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
                     RagdollSystem:Enable()
                 else
                     RagdollSystem:Disable()
+                end
+            elseif featureName == "SpaceMode" then
+                if featureData.enabled then
+                    SpaceModeSystem:Enable()
+                else
+                    SpaceModeSystem:Disable()
                 end
             elseif featureName == "ESPHighlight" then
                 if featureData.enabled then
