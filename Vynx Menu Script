@@ -4086,6 +4086,62 @@ function ShowPlayerInfo(player)
         end
     end)
     
+	-- View Player button
+local ViewPlayerBtn = Utility.Create("TextButton", {
+    Size = UDim2.new(1, 0, 0, 40),
+    BackgroundColor3 = Theme.Info,
+    BackgroundTransparency = 0.2,
+    Text = ViewingPlayer == player and "👁️  Unview" or "👁️  View Player",
+    TextColor3 = Theme.TextPrimary,
+    TextSize = 14,
+    Font = Enum.Font.GothamBold,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    LayoutOrder = 4,
+    Parent = ActionsContainer
+})
+
+Utility.Create("UICorner", {
+    CornerRadius = UDim.new(0, 10),
+    Parent = ViewPlayerBtn
+})
+
+Utility.Create("UIStroke", {
+    Color = Theme.Info,
+    Thickness = 1,
+    Transparency = 0.5,
+    Parent = ViewPlayerBtn
+})
+
+ViewPlayerBtn.MouseEnter:Connect(function()
+    Utility.Tween(ViewPlayerBtn, {BackgroundTransparency = 0}, 0.2)
+end)
+
+ViewPlayerBtn.MouseLeave:Connect(function()
+    Utility.Tween(ViewPlayerBtn, {BackgroundTransparency = 0.2}, 0.2)
+end)
+
+ViewPlayerBtn.MouseButton1Click:Connect(function()
+    if ViewingPlayer == player then
+        -- Unview
+        ViewingPlayer = nil
+        Camera.CameraSubject = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        ViewPlayerBtn.Text = "👁️  View Player"
+        ViewPlayerBtn.BackgroundColor3 = Theme.Info
+    else
+        -- View
+        if player and player.Character then
+            local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                ViewingPlayer = player
+                Camera.CameraSubject = humanoid
+                ViewPlayerBtn.Text = "👁️  Unview"
+                ViewPlayerBtn.BackgroundColor3 = Theme.Success
+            end
+        end
+    end
+end)
+
     -- Live stats update
     if UpdateConnection then
         UpdateConnection:Disconnect()
