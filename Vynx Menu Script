@@ -821,25 +821,32 @@ end
 _G.VynxRagdollSystem = RagdollSystem
 
 -- ═══════════════════════════════════════════════════════════════
--- SPACE MODE SYSTEM - ZERO GRAVITY PHYSICS
+-- SPACE MODE SYSTEM - ZERO GRAVITY PHYSICS (STABILE KOLLISION)
 -- ═══════════════════════════════════════════════════════════════
 
 local SpaceModeSystem = {
     enabled = false,
     bodyVelocity = nil,
+    bodyAngularVelocity = nil,
     connection = nil,
     velocity = Vector3.zero,
+    angularVelocity = Vector3.zero,
     touchConnections = {},
     
     -- Physics constants
-    PLAYER_MASS = 2.0,
-    TYPICAL_MASS = 0.7,
-    BOUNCE_RETENTION = 0.85,
-    DAMPING_FACTOR = 0.9997,
-    ANGULAR_DAMPING = 0.993,
-    MAX_SPEED = 200,
-    FLOOR_PUSH_THRESHOLD = 1.2,
-    CEILING_THRESHOLD = 2.5
+    THRUST_POWER = 25,
+    ROTATION_SPEED = 2.5,
+    LINEAR_DAMPING = 0.998,
+    ANGULAR_DAMPING = 0.985,
+    MAX_LINEAR_SPEED = 150,
+    MAX_ANGULAR_SPEED = 8,
+    COLLISION_ELASTICITY = 0.7,
+    MASS = 2.0,
+    
+    -- Collision detection
+    lastCollisionTime = {},
+    collisionCooldown = 0.05,
+    activeCollisions = {}
 }
 
 function SpaceModeSystem:Enable()
@@ -852,271 +859,298 @@ function SpaceModeSystem:Enable()
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not humanoid or not hrp then return end
     
-    print("[Vynx] 🚀 Space Mode enabled")
+    print("[Vynx] 🚀 Space Mode enabled - Zero Gravity Active")
     
-    -- Set platform stand
+    -- Freeze humanoid but keep physics active
     humanoid.PlatformStand = true
+    humanoid.AutoRotate = false
     
-    -- Create body velocity
-    self.bodyVelocity = Utility.Create("BodyVelocity", {
-        MaxForce = Vector3.new(math.huge, math.huge, math.huge),
-        Velocity = Vector3.zero,
-        Parent = hrp
-    })
-    
-    -- Set physics properties
+    -- Enable collision on ALL body parts
     for _, part in pairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
             part.CanCollide = true
+            part.Massless = false
             part.CustomPhysicalProperties = PhysicalProperties.new(
-                self.PLAYER_MASS,
-                0.03,
-                0.8,
-                1, 1
+                self.MASS,
+                0.1,
+                self.COLLISION_ELASTICITY,
+                1,
+                1
             )
         end
     end
     
-    -- Setup collision handlers
-    self:SetupCollisions(character, hrp)
+    -- Create body movers
+    self.bodyVelocity = Utility.Create("BodyVelocity", {
+        MaxForce = Vector3.new(math.huge, math.huge, math.huge),
+        Velocity = Vector3.zero,
+        P = 12000,
+        Parent = hrp
+    })
     
-    -- Reset velocity
-    self.velocity = Vector3.zero
+    self.bodyAngularVelocity = Utility.Create("BodyAngularVelocity", {
+        MaxTorque = Vector3.new(math.huge, math.huge, math.huge),
+        AngularVelocity = Vector3.zero,
+        P = 8000,
+        Parent = hrp
+    })
+    
+    -- Setup collision handlers for ALL parts
+    self:SetupCollisions(character)
+    
+    -- Reset velocities
+    self.velocity = hrp.AssemblyLinearVelocity or Vector3.zero
+    self.angularVelocity = Vector3.zero
     
     -- Start update loop
     self:StartUpdateLoop(character, humanoid, hrp)
     
     self.enabled = true
+    
+    print("[Vynx] ✅ Collision enabled on all body parts including legs")
 end
 
-function SpaceModeSystem:SetupCollisions(character, hrp)
+function SpaceModeSystem:SetupCollisions(character)
+    -- Clear old connections
+    for _, conn in pairs(self.touchConnections) do
+        Utility.SafeCall(function() conn:Disconnect() end)
+    end
+    self.touchConnections = {}
+    self.activeCollisions = {}
+    
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    -- Get ALL body parts including legs
+    local bodyParts = {}
     for _, part in pairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
-            local connection = part.Touched:Connect(function(hit)
-                if hit.Parent == character or hit:IsDescendantOf(character) then
-                    return
-                end
-                
-                self:HandleCollision(hit, hrp)
-            end)
-            
-            table.insert(self.touchConnections, connection)
+            table.insert(bodyParts, part)
+            part.CanCollide = true -- Force enable collision
         end
     end
+    
+    print("[Vynx] Setting up collision for " .. #bodyParts .. " body parts")
+    
+    -- Setup collision detection for each part
+    for _, part in pairs(bodyParts) do
+        local partName = part.Name
+        
+        local connection = part.Touched:Connect(function(hit)
+            if not self.enabled then return end
+            if hit:IsDescendantOf(character) then return end
+            
+            self:HandleCollision(part, hit, character, hrp)
+        end)
+        
+        table.insert(self.touchConnections, connection)
+    end
+    
+    print("[Vynx] ✅ Collision handlers active: " .. #self.touchConnections)
 end
 
-function SpaceModeSystem:HandleCollision(hit, hrp)
-    local otherVelocity = Vector3.zero
-    local otherMass = self.TYPICAL_MASS
-    local isPlayer = false
+function SpaceModeSystem:HandleCollision(myPart, hitPart, myCharacter, hrp)
+    -- Ignore invalid collisions
+    if not myPart or not hitPart or not hrp then return end
+    if hitPart:IsDescendantOf(myCharacter) then return end
     
-    -- Check if hit is another player
-    local otherPlayer = Services.Players:GetPlayerFromCharacter(hit.Parent)
-    if otherPlayer then
-        isPlayer = true
-        local otherHRP = hit.Parent:FindFirstChild("HumanoidRootPart")
-        if otherHRP then
-            otherVelocity = otherHRP.AssemblyLinearVelocity or otherHRP.Velocity
-            if otherHRP.CustomPhysicalProperties then
-                otherMass = otherHRP.CustomPhysicalProperties.Density
-            end
+    -- Cooldown check per unique collision pair
+    local collisionKey = myPart.Name .. "_" .. hitPart:GetFullName()
+    local now = tick()
+    
+    if self.lastCollisionTime[collisionKey] and (now - self.lastCollisionTime[collisionKey]) < self.collisionCooldown then
+        return
+    end
+    self.lastCollisionTime[collisionKey] = now
+    
+    -- Get positions
+    local myPos = myPart.Position
+    local hitPos = hitPart.Position
+    
+    -- Calculate collision normal (direction from hit to me)
+    local normal = (myPos - hitPos).Unit
+    
+    -- Get velocities
+    local myVel = self.velocity
+    local hitVel = Vector3.zero
+    
+    -- Check if hit object is a player
+    local hitPlayer = Services.Players:GetPlayerFromCharacter(hitPart.Parent)
+    if hitPlayer then
+        local hitChar = hitPart.Parent
+        local hitHRP = hitChar:FindFirstChild("HumanoidRootPart")
+        if hitHRP then
+            hitVel = hitHRP.AssemblyLinearVelocity or hitHRP.Velocity
         end
-    else
-        if hit:IsA("BasePart") then
-            otherVelocity = hit.AssemblyLinearVelocity or hit.Velocity
-            if hit.CustomPhysicalProperties then
-                otherMass = hit.CustomPhysicalProperties.Density
-            end
-        end
+    elseif hitPart:IsA("BasePart") then
+        hitVel = hitPart.AssemblyLinearVelocity or hitPart.Velocity
     end
     
-    local myVelocity = self.velocity
-    local relativeVelocity = myVelocity - otherVelocity
-    local impactSpeed = relativeVelocity.Magnitude
+    -- Calculate relative velocity
+    local relativeVel = myVel - hitVel
+    local impactSpeed = relativeVel.Magnitude
     
+    -- Minimum impact threshold
     if impactSpeed < 1 then return end
     
-    local collisionNormal = (hrp.Position - hit.Position).Unit
-    local isVertical = math.abs(collisionNormal.Y) > 0.7
+    -- Check if we're moving toward the collision surface
+    local normalVelocity = relativeVel:Dot(normal)
     
-    -- Calculate bounce
-    if isPlayer then
-        local cappedSpeed = math.min(impactSpeed, 50)
-        local massRatio = otherMass / (self.PLAYER_MASS + otherMass)
-        local damping = math.clamp(massRatio, 0.3, 0.85) * 0.5
+    -- Apply collision response
+    if normalVelocity < 0 then
+        -- Calculate reflection
+        local reflectedVel = relativeVel - (2 * normalVelocity * normal)
         
-        local dotProduct = relativeVelocity:Dot(collisionNormal)
-        local reflection = relativeVelocity - (2 * dotProduct * collisionNormal)
+        -- Apply elasticity
+        local newVelocity = hitVel + (reflectedVel * self.COLLISION_ELASTICITY)
         
-        self.velocity = otherVelocity + (reflection.Unit * cappedSpeed * damping)
-    else
-        local dotProduct = relativeVelocity:Dot(collisionNormal)
-        local reflection = relativeVelocity - (2 * dotProduct * collisionNormal)
+        -- Update velocity
+        self.velocity = newVelocity
         
-        self.velocity = otherVelocity + (reflection.Unit * impactSpeed * self.BOUNCE_RETENTION)
-    end
-    
-    -- Apply rotation
-    local impactOffset = hit.Position - hrp.Position
-    local torqueAxis = impactOffset:Cross(relativeVelocity)
-    local spinStrength = math.clamp(impactSpeed / 12, 0.8, 10)
-    
-    if isVertical then
-        spinStrength = spinStrength * 0.4
-    end
-    
-    local massSpinDamping = self.TYPICAL_MASS / self.PLAYER_MASS
-    spinStrength = spinStrength * massSpinDamping
-    
-    if isPlayer then
-        spinStrength = spinStrength * 0.7
-    end
-    
-    if torqueAxis.Magnitude > 0.1 then
-        hrp.AssemblyAngularVelocity = hrp.AssemblyAngularVelocity + (torqueAxis.Unit * spinStrength)
-    else
-        local randomAxis = Vector3.new(
-            math.random(-1, 1),
-            math.random(-1, 1),
-            math.random(-1, 1)
-        ).Unit
-        hrp.AssemblyAngularVelocity = hrp.AssemblyAngularVelocity + (randomAxis * spinStrength * 0.5)
+        -- Add rotational impulse based on collision point
+        local collisionOffset = myPos - hrp.Position
+        local torqueAxis = collisionOffset:Cross(relativeVel)
+        
+        if torqueAxis.Magnitude > 0.1 then
+            local torqueMagnitude = math.clamp(impactSpeed * 0.2, 0.5, 6)
+            self.angularVelocity = self.angularVelocity + (torqueAxis.Unit * torqueMagnitude)
+        end
+        
+        -- Push away from surface to prevent sticking
+        local separationForce = normal * math.min(impactSpeed * 0.1, 2)
+        hrp.CFrame = hrp.CFrame + (normal * 0.08)
+        self.velocity = self.velocity + separationForce
+        
+        -- Debug output
+        if myPart.Name:match("Leg") or myPart.Name:match("Foot") then
+            print("[Vynx] Leg collision detected: " .. myPart.Name .. " hit " .. hitPart.Name)
+        end
     end
 end
 
 function SpaceModeSystem:StartUpdateLoop(character, humanoid, hrp)
     if self.connection then self.connection:Disconnect() end
     
-    local thrust = FeatureStates.SpaceMode.value
-    
     self.connection = Services.RunService.Heartbeat:Connect(function(dt)
-        if not character or not humanoid or not hrp or humanoid.Health <= 0 then
+        if not character or not character.Parent or not humanoid or not hrp or humanoid.Health <= 0 then
             self:Disable()
             return
         end
         
-        thrust = FeatureStates.SpaceMode.value
+        -- Ensure all parts stay collidable
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                if not part.CanCollide then
+                    part.CanCollide = true
+                end
+            end
+        end
+        
+        -- Get camera orientation
         local camCF = Camera.CFrame
-        local moveDir = Vector3.zero
+        local camLook = camCF.LookVector
+        local camRight = camCF.RightVector
+        local camUp = camCF.UpVector
+        
+        -- Movement input (thrust)
+        local thrustDir = Vector3.zero
         local UIS = Services.UserInputService
         
-        -- Movement input
-        if UIS:IsKeyDown(Enum.KeyCode.W) then moveDir += camCF.LookVector end
-        if UIS:IsKeyDown(Enum.KeyCode.S) then moveDir -= camCF.LookVector end
-        if UIS:IsKeyDown(Enum.KeyCode.A) then moveDir -= camCF.RightVector end
-        if UIS:IsKeyDown(Enum.KeyCode.D) then moveDir += camCF.RightVector end
-        if UIS:IsKeyDown(Enum.KeyCode.Space) then moveDir += Vector3.new(0, 1, 0) end
-        if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then moveDir -= Vector3.new(0, 1, 0) end
-        
-        -- Manual rotation
-        if UIS:IsKeyDown(Enum.KeyCode.Q) then
-            hrp.AssemblyAngularVelocity += Vector3.new(0, 8 * dt, 0)
-        end
-        if UIS:IsKeyDown(Enum.KeyCode.E) then
-            hrp.AssemblyAngularVelocity += Vector3.new(0, -8 * dt, 0)
-        end
+        if UIS:IsKeyDown(Enum.KeyCode.W) then thrustDir = thrustDir + camLook end
+        if UIS:IsKeyDown(Enum.KeyCode.S) then thrustDir = thrustDir - camLook end
+        if UIS:IsKeyDown(Enum.KeyCode.A) then thrustDir = thrustDir - camRight end
+        if UIS:IsKeyDown(Enum.KeyCode.D) then thrustDir = thrustDir + camRight end
+        if UIS:IsKeyDown(Enum.KeyCode.Space) then thrustDir = thrustDir + camUp end
+        if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then thrustDir = thrustDir - camUp end
         
         -- Apply thrust
-        if moveDir.Magnitude > 0 then
-            moveDir = moveDir.Unit
-            self.velocity += moveDir * thrust * dt * 6
+        local thrustPower = FeatureStates.SpaceMode.value
+        if thrustDir.Magnitude > 0 then
+            thrustDir = thrustDir.Unit
+            self.velocity = self.velocity + (thrustDir * thrustPower * dt * 4)
         end
         
-        -- Apply damping
-        self.velocity *= self.DAMPING_FACTOR
-        hrp.AssemblyAngularVelocity *= self.ANGULAR_DAMPING
+        -- Rotation input
+        local rotationInput = Vector3.zero
         
-        -- Clamp speed
-        if self.velocity.Magnitude > self.MAX_SPEED then
-            self.velocity = self.velocity.Unit * self.MAX_SPEED
+        if UIS:IsKeyDown(Enum.KeyCode.Q) then 
+            rotationInput = rotationInput + Vector3.new(0, 1, 0) 
+        end
+        if UIS:IsKeyDown(Enum.KeyCode.E) then 
+            rotationInput = rotationInput + Vector3.new(0, -1, 0) 
+        end
+        if UIS:IsKeyDown(Enum.KeyCode.R) then 
+            rotationInput = rotationInput + camRight 
+        end
+        if UIS:IsKeyDown(Enum.KeyCode.F) then 
+            rotationInput = rotationInput - camRight 
+        end
+        if UIS:IsKeyDown(Enum.KeyCode.T) then 
+            rotationInput = rotationInput + camLook 
+        end
+        if UIS:IsKeyDown(Enum.KeyCode.G) then 
+            rotationInput = rotationInput - camLook 
         end
         
-        -- Apply velocity
+        -- Apply rotation
+        if rotationInput.Magnitude > 0 then
+            rotationInput = rotationInput.Unit
+            self.angularVelocity = self.angularVelocity + (rotationInput * self.ROTATION_SPEED * dt * 50)
+        end
+        
+        -- Apply damping (space friction simulation)
+        self.velocity = self.velocity * self.LINEAR_DAMPING
+        self.angularVelocity = self.angularVelocity * self.ANGULAR_DAMPING
+        
+        -- Clamp velocities
+        if self.velocity.Magnitude > self.MAX_LINEAR_SPEED then
+            self.velocity = self.velocity.Unit * self.MAX_LINEAR_SPEED
+        end
+        
+        if self.angularVelocity.Magnitude > self.MAX_ANGULAR_SPEED then
+            self.angularVelocity = self.angularVelocity.Unit * self.MAX_ANGULAR_SPEED
+        end
+        
+        -- Apply to body movers
         if self.bodyVelocity then
             self.bodyVelocity.Velocity = self.velocity
         end
         
-        -- Anti-clip system
-        self:HandleAntiClip(character, hrp)
+        if self.bodyAngularVelocity then
+            self.bodyAngularVelocity.AngularVelocity = self.angularVelocity
+        end
+        
+        -- Keep humanoid frozen
+        humanoid.PlatformStand = true
+        humanoid.AutoRotate = false
     end)
-end
-
-function SpaceModeSystem:HandleAntiClip(character, hrp)
-    -- Check floor clipping
-    local legParts = {
-        character:FindFirstChild("Left Leg") or character:FindFirstChild("LeftLowerLeg"),
-        character:FindFirstChild("Right Leg") or character:FindFirstChild("RightLowerLeg"),
-        character:FindFirstChild("LeftUpperLeg"),
-        character:FindFirstChild("RightUpperLeg"),
-        character:FindFirstChild("LeftFoot"),
-        character:FindFirstChild("RightFoot")
-    }
-    
-    local needsFloorPush = false
-    local lowestDistance = math.huge
-    
-    for _, legPart in pairs(legParts) do
-        if legPart and legPart:IsA("BasePart") then
-            local ray = Ray.new(legPart.Position, Vector3.new(0, -5, 0))
-            local hit, pos = Services.Workspace:FindPartOnRayWithIgnoreList(ray, {character})
-            
-            if hit then
-                local distance = (legPart.Position - pos).Magnitude
-                if distance < self.FLOOR_PUSH_THRESHOLD then
-                    needsFloorPush = true
-                    lowestDistance = math.min(lowestDistance, distance)
-                end
-            end
-        end
-    end
-    
-    -- Check HRP floor distance
-    local rayHRP = Ray.new(hrp.Position, Vector3.new(0, -10, 0))
-    local hitHRP, posHRP = Services.Workspace:FindPartOnRayWithIgnoreList(rayHRP, {character})
-    
-    if hitHRP then
-        local distanceHRP = (hrp.Position - posHRP).Magnitude
-        if distanceHRP < 3.0 then
-            needsFloorPush = true
-            lowestDistance = math.min(lowestDistance, distanceHRP)
-        end
-    end
-    
-    -- Check ceiling
-    local rayUp = Ray.new(hrp.Position, Vector3.new(0, 5, 0))
-    local hitCeiling, posCeiling = Services.Workspace:FindPartOnRayWithIgnoreList(rayUp, {character})
-    
-    if hitCeiling then
-        local distanceCeiling = (posCeiling - hrp.Position).Magnitude
-        if distanceCeiling < self.CEILING_THRESHOLD and self.velocity.Y > 0 then
-            self.velocity = Vector3.new(self.velocity.X, -5, self.velocity.Z)
-        end
-    end
-    
-    -- Apply floor push
-    if needsFloorPush then
-        local pushStrength = math.clamp(12 - (lowestDistance * 2), 6, 15)
-        self.velocity += Vector3.new(0, pushStrength, 0)
-        hrp.CFrame += Vector3.new(0, 0.1, 0)
-    end
 end
 
 function SpaceModeSystem:Disable()
     if not self.enabled then return end
     
+    -- Disconnect update loop
     if self.connection then
         self.connection:Disconnect()
         self.connection = nil
     end
     
+    -- Disconnect collision handlers
     for _, conn in pairs(self.touchConnections) do
         Utility.SafeCall(function() conn:Disconnect() end)
     end
     self.touchConnections = {}
+    self.activeCollisions = {}
     
+    -- Destroy body movers
     if self.bodyVelocity then
         self.bodyVelocity:Destroy()
         self.bodyVelocity = nil
+    end
+    
+    if self.bodyAngularVelocity then
+        self.bodyAngularVelocity:Destroy()
+        self.bodyAngularVelocity = nil
     end
     
     local character = LocalPlayer.Character
@@ -1124,26 +1158,35 @@ function SpaceModeSystem:Disable()
         local humanoid = character:FindFirstChildOfClass("Humanoid")
         local hrp = character:FindFirstChild("HumanoidRootPart")
         
-        -- Reset physics
+        -- Reset collision and physics properties
         for _, part in pairs(character:GetDescendants()) do
             if part:IsA("BasePart") then
                 part.CustomPhysicalProperties = nil
-                part.CanCollide = part.Name == "HumanoidRootPart"
+                part.CanCollide = (part.Name == "HumanoidRootPart")
+                part.Massless = false
             end
         end
         
+        -- Unfreeze humanoid
         if humanoid then
             humanoid.PlatformStand = false
+            humanoid.AutoRotate = true
             humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+            task.wait(0.1)
+            humanoid:ChangeState(Enum.HumanoidStateType.Running)
         end
         
+        -- Stop all movement
         if hrp then
             hrp.AssemblyLinearVelocity = Vector3.zero
             hrp.AssemblyAngularVelocity = Vector3.zero
         end
     end
     
+    -- Reset state
     self.velocity = Vector3.zero
+    self.angularVelocity = Vector3.zero
+    self.lastCollisionTime = {}
     self.enabled = false
     
     print("[Vynx] Space Mode disabled")
