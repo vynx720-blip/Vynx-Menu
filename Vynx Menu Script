@@ -1196,7 +1196,7 @@ end
 _G.VynxSpaceModeSystem = SpaceModeSystem
 
 -- ═══════════════════════════════════════════════════════════════
--- INVISIBLE MODE SYSTEM - CLONE-BASED
+-- INVISIBLE MODE SYSTEM - CLONE-BASED (OHNE BLENDEN-EFFEKT) - FIXED FÜR CUSTOM CHARACTER SIZE
 -- ═══════════════════════════════════════════════════════════════
 
 local InvisibleSystem = {
@@ -1205,10 +1205,12 @@ local InvisibleSystem = {
     cloneRoot = nil,
     cloneHumanoid = nil,
     savedCFrame = nil,
+    originalHipHeight = nil,
     
     -- Connections
     teleportConnection = nil,
     movementConnection = nil,
+    colorMaintainConnection = nil,
     
     -- Animations
     cloneAnimations = {},
@@ -1221,120 +1223,223 @@ function InvisibleSystem:CreateClone()
     if not character then return nil, nil, nil end
     
     local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil, nil, nil end
+    local originalHumanoid = character:FindFirstChildOfClass("Humanoid")
+    if not hrp or not originalHumanoid then return nil, nil, nil end
     
-    -- Create clone model
-    local clone = Utility.Create("Model", {
-        Name = "VynxClone"
-    })
+    -- WICHTIG: Speichere die originale HipHeight
+    self.originalHipHeight = originalHumanoid.HipHeight
     
-    local cloneHRP = nil
-    local clonedParts = {}
+    local originalArchivable = character.Archivable
+    character.Archivable = true
     
-    -- Clone all parts
-    for _, part in pairs(character:GetChildren()) do
-        if part:IsA("BasePart") then
-            local success, clonedPart = Utility.SafeCall(function()
-                return part:Clone()
-            end)
-            
-            if success and clonedPart then
-                -- White ghost appearance
-                clonedPart.Color = Color3.fromRGB(255, 255, 255)
-                
-                if clonedPart.Name == "HumanoidRootPart" then
-                    clonedPart.Transparency = 1
-                    cloneHRP = clonedPart
-                else
-                    clonedPart.Transparency = math.clamp(clonedPart.Transparency + 0.5, 0, 1)
-                end
-                
-                clonedPart.CanCollide = clonedPart.Name == "HumanoidRootPart"
-                clonedPart.Anchored = false
-                clonedPart.Massless = false
-                clonedPart.CustomPhysicalProperties = PhysicalProperties.new(1.0, 0.3, 0, 1, 1)
-                
-                -- Remove scripts
-                for _, obj in pairs(clonedPart:GetDescendants()) do
-                    if obj:IsA("LuaSourceContainer") then
-                        obj:Destroy()
-                    end
-                end
-                
-                clonedPart.Parent = clone
-                clonedParts[part.Name] = clonedPart
-            end
+    local clone = character:Clone()
+    
+    character.Archivable = originalArchivable
+    
+    clone.Name = "VynxClone"
+    
+    local cloneHRP = clone:FindFirstChild("HumanoidRootPart")
+    local cloneHumanoid = clone:FindFirstChildOfClass("Humanoid")
+    
+    if not cloneHRP or not cloneHumanoid then
+        clone:Destroy()
+        return nil, nil, nil
+    end
+    
+    cloneHumanoid.DisplayName = ""
+    cloneHumanoid.HealthDisplayDistance = 0
+    cloneHumanoid.NameDisplayDistance = 0
+    cloneHumanoid.WalkSpeed = FeatureStates.WalkSpeed.enabled and FeatureStates.WalkSpeed.value or 16
+    cloneHumanoid.JumpPower = FeatureStates.JumpPower.enabled and FeatureStates.JumpPower.value or 50
+    cloneHumanoid.JumpHeight = FeatureStates.JumpPower.enabled and (FeatureStates.JumpPower.value / 10) or 7.2
+    cloneHumanoid.AutoRotate = true
+    cloneHumanoid.AutoJumpEnabled = false
+    
+    -- ✅ FIX: Übernehme die originale HipHeight vom echten Character
+    cloneHumanoid.HipHeight = self.originalHipHeight
+    
+    cloneHumanoid.Health = cloneHumanoid.MaxHealth
+    
+    -- Entferne alle Scripts und unnötige Objekte
+    for _, descendant in pairs(clone:GetDescendants()) do
+        if descendant:IsA("LocalScript") or descendant:IsA("Script") or descendant:IsA("ModuleScript") then
+            descendant:Destroy()
+        elseif descendant:IsA("Sound") then
+            descendant:Destroy()
+        elseif descendant:IsA("ParticleEmitter") or descendant:IsA("Trail") or descendant:IsA("Beam") then
+            descendant:Destroy()
+        elseif descendant:IsA("CharacterMesh") then
+            descendant:Destroy()
+        elseif descendant:IsA("BodyGyro") or descendant:IsA("BodyPosition") or 
+               descendant:IsA("BodyVelocity") or descendant:IsA("BodyThrust") or
+               descendant:IsA("BodyAngularVelocity") then
+            descendant:Destroy()
         end
     end
     
-    -- Ensure HRP exists
-    if not cloneHRP then
-        cloneHRP = Utility.Create("Part", {
-            Name = "HumanoidRootPart",
-            Size = Vector3.new(2, 2, 1),
-            Color = Color3.fromRGB(255, 255, 255),
-            Transparency = 1,
-            CanCollide = true,
-            Anchored = false,
-            Massless = false,
-            Parent = clone
-        })
-        clonedParts["HumanoidRootPart"] = cloneHRP
+    if not cloneHumanoid:FindFirstChildOfClass("Animator") then
+        Instance.new("Animator", cloneHumanoid)
     end
     
+    cloneHRP.Transparency = 1
     cloneHRP.CanCollide = true
+    cloneHRP.Anchored = false
+    cloneHRP.Massless = false
     cloneHRP.CustomPhysicalProperties = PhysicalProperties.new(1.0, 0.3, 0, 1, 1)
     cloneHRP.CFrame = hrp.CFrame + Vector3.new(0, 0.2, 0)
+    cloneHRP.AssemblyLinearVelocity = Vector3.zero
+    cloneHRP.AssemblyAngularVelocity = Vector3.zero
     
-    -- Create humanoid
-    local humanoid = Utility.Create("Humanoid", {
-        DisplayName = "",
-        HealthDisplayDistance = 0,
-        NameDisplayDistance = 0,
-        WalkSpeed = FeatureStates.WalkSpeed.enabled and FeatureStates.WalkSpeed.value or 16,
-        JumpPower = FeatureStates.JumpPower.enabled and FeatureStates.JumpPower.value or 50,
-        JumpHeight = FeatureStates.JumpPower.enabled and (FeatureStates.JumpPower.value / 10) or 7.2,
-        AutoRotate = true,
-        AutoJumpEnabled = false,
-        HipHeight = 2,
-        Parent = clone
-    })
+    -- ✅ ALLE PARTS: SOFORT UND DAUERHAFT WEISS (KEIN BLENDEN)
+    for _, part in pairs(clone:GetDescendants()) do
+        if part:IsA("BasePart") and part ~= cloneHRP then
+            part.Color = Color3.fromRGB(255, 255, 255)
+            part.Transparency = 0.5
+            part.CanCollide = false
+            part.Massless = true
+            part.Material = Enum.Material.ForceField
+        end
+    end
     
-    -- Clone joints
-    for _, joint in pairs(character:GetDescendants()) do
-        if joint:IsA("Motor6D") then
-            local part0Name = joint.Part0 and joint.Part0.Name
-            local part1Name = joint.Part1 and joint.Part1.Name
-            
-            if part0Name and part1Name and clonedParts[part0Name] and clonedParts[part1Name] then
-                local newJoint = joint:Clone()
-                newJoint.Part0 = clonedParts[part0Name]
-                newJoint.Part1 = clonedParts[part1Name]
-                newJoint.Parent = newJoint.Part0
+    -- Accessories: SOFORT UND DAUERHAFT WEISS
+    for _, accessory in pairs(clone:GetChildren()) do
+        if accessory:IsA("Accessory") then
+            local handle = accessory:FindFirstChild("Handle")
+            if handle and handle:IsA("BasePart") then
+                handle.Color = Color3.fromRGB(255, 255, 255)
+                handle.Transparency = 0.5
+                handle.CanCollide = false
+                handle.Massless = true
+                handle.Material = Enum.Material.ForceField
             end
         end
     end
     
-    -- Create animator
-    Utility.Create("Animator", {
-        Parent = humanoid
-    })
+    -- Clothing entfernen
+    for _, clothing in pairs(clone:GetChildren()) do
+        if clothing:IsA("Shirt") or clothing:IsA("Pants") or clothing:IsA("ShirtGraphic") then
+            clothing:Destroy()
+        end
+    end
+    
+    -- HEAD: SOFORT UND DAUERHAFT WEISS
+    local head = clone:FindFirstChild("Head")
+    if head then
+        head.Color = Color3.fromRGB(255, 255, 255)
+        head.Transparency = 0.5
+        head.Material = Enum.Material.ForceField
+        
+        local face = head:FindFirstChildOfClass("Decal")
+        if face then
+            face.Transparency = 0.3
+        end
+    end
+    
+    -- Welds validieren
+    task.spawn(function()
+        task.wait(0.1)
+        
+        for _, descendant in pairs(clone:GetDescendants()) do
+            if descendant:IsA("Weld") or descendant:IsA("Motor6D") or 
+               descendant:IsA("ManualWeld") or descendant:IsA("WeldConstraint") then
+                
+                if descendant.Part0 and descendant.Part0:IsDescendantOf(character) then
+                    descendant:Destroy()
+                elseif descendant.Part1 and descendant.Part1:IsDescendantOf(character) then
+                    descendant:Destroy()
+                elseif not descendant.Part0 or not descendant.Part1 then
+                    descendant:Destroy()
+                end
+            end
+        end
+        
+        for _, accessory in pairs(clone:GetChildren()) do
+            if accessory:IsA("Accessory") then
+                local handle = accessory:FindFirstChild("Handle")
+                if handle then
+                    local handleAttachment = handle:FindFirstChildOfClass("Attachment")
+                    if handleAttachment then
+                        local attachmentName = handleAttachment.Name
+                        
+                        local connected = false
+                        for _, part in pairs(clone:GetChildren()) do
+                            if part:IsA("BasePart") then
+                                local targetAttachment = part:FindFirstChild(attachmentName)
+                                if targetAttachment and targetAttachment:IsA("Attachment") then
+                                    if not handle:FindFirstChildOfClass("WeldConstraint") then
+                                        local weld = Instance.new("WeldConstraint")
+                                        weld.Part0 = handle
+                                        weld.Part1 = part
+                                        weld.Parent = handle
+                                    end
+                                    connected = true
+                                    break
+                                end
+                            end
+                        end
+                        
+                        if not connected and head then
+                            if not handle:FindFirstChildOfClass("WeldConstraint") then
+                                local weld = Instance.new("WeldConstraint")
+                                weld.Part0 = handle
+                                weld.Part1 = head
+                                weld.Parent = handle
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
     
     clone.Parent = Services.Workspace
     
-    -- Cleanup welds
-    task.wait(0.1)
-    for _, desc in pairs(clone:GetDescendants()) do
-        if desc:IsA("Weld") or desc:IsA("Motor6D") or desc:IsA("ManualWeld") then
-            if desc.Part0 and desc.Part0:IsDescendantOf(character) then
-                desc:Destroy()
-            elseif desc.Part1 and desc.Part1:IsDescendantOf(character) then
-                desc:Destroy()
+    task.wait(0.05)
+    
+    cloneHRP.CFrame = hrp.CFrame + Vector3.new(0, 0.2, 0)
+    cloneHRP.AssemblyLinearVelocity = Vector3.zero
+    cloneHRP.AssemblyAngularVelocity = Vector3.zero
+    
+    print("[Vynx] ✅ Clone created (White Ghost) with HipHeight:", self.originalHipHeight)
+    
+    return clone, cloneHRP, cloneHumanoid
+end
+
+-- ✅ FARBE KONSTANT HALTEN (NUR BEI ÄNDERUNG - KEIN BLENDEN)
+function InvisibleSystem:MaintainCloneColor()
+    if not self.isActive or not self.cloneCharacter then return end
+    
+    for _, part in pairs(self.cloneCharacter:GetDescendants()) do
+        if part:IsA("BasePart") and part ~= self.cloneRoot then
+            -- NUR setzen wenn anders (verhindert unnötige Updates)
+            if part.Color ~= Color3.fromRGB(255, 255, 255) then
+                part.Color = Color3.fromRGB(255, 255, 255)
+            end
+            if part.Transparency ~= 0.5 then
+                part.Transparency = 0.5
+            end
+            if part.Material ~= Enum.Material.ForceField then
+                part.Material = Enum.Material.ForceField
             end
         end
     end
     
-    return clone, cloneHRP, humanoid
+    for _, accessory in pairs(self.cloneCharacter:GetChildren()) do
+        if accessory:IsA("Accessory") then
+            local handle = accessory:FindFirstChild("Handle")
+            if handle and handle:IsA("BasePart") then
+                if handle.Color ~= Color3.fromRGB(255, 255, 255) then
+                    handle.Color = Color3.fromRGB(255, 255, 255)
+                end
+                if handle.Transparency ~= 0.5 then
+                    handle.Transparency = 0.5
+                end
+                if handle.Material ~= Enum.Material.ForceField then
+                    handle.Material = Enum.Material.ForceField
+                end
+            end
+        end
+    end
 end
 
 function InvisibleSystem:LoadAnimations()
@@ -1364,7 +1469,6 @@ function InvisibleSystem:LoadAnimations()
         end
     end
     
-    -- Play idle
     if self.cloneAnimations.Idle then
         self.cloneAnimations.Idle:Play()
         self.currentAnimation = self.cloneAnimations.Idle
@@ -1403,7 +1507,6 @@ function InvisibleSystem:UpdateAnimation(moveVector, isJumping)
         end
     end
     
-    -- Adjust speed
     if self.currentAnimation and (newState == "Walk" or newState == "Run") then
         local speedRatio = self.cloneHumanoid.WalkSpeed / 16
         self.currentAnimation:AdjustSpeed(speedRatio)
@@ -1420,7 +1523,6 @@ function InvisibleSystem:MakeInvisible()
     local humanoid = character:FindFirstChild("Humanoid")
     if not hrp or not humanoid then return end
     
-    -- Move underground
     local safeY = -400
     
     humanoid.Health = humanoid.MaxHealth
@@ -1431,7 +1533,6 @@ function InvisibleSystem:MakeInvisible()
     humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
     humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
     
-    -- Teleport underground
     for i = 1, 3 do
         hrp.CFrame = CFrame.new(0, safeY, 0)
     end
@@ -1441,7 +1542,6 @@ function InvisibleSystem:MakeInvisible()
     hrp.Velocity = Vector3.zero
     hrp.RotVelocity = Vector3.zero
     
-    -- Make invisible
     for _, part in pairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
             part.CanCollide = false
@@ -1468,14 +1568,12 @@ function InvisibleSystem:ControlClone()
     
     self.cloneHumanoid.PlatformStand = false
     
-    -- Apply walk speed
     local walkSpeed = FeatureStates.WalkSpeed.enabled and FeatureStates.WalkSpeed.value or 16
     if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then
         walkSpeed = walkSpeed * 1.5
     end
     self.cloneHumanoid.WalkSpeed = walkSpeed
     
-    -- Apply jump power
     if FeatureStates.JumpPower.enabled then
         local jumpValue = FeatureStates.JumpPower.value
         if self.cloneHumanoid.UseJumpPower then
@@ -1489,6 +1587,11 @@ function InvisibleSystem:ControlClone()
         else
             self.cloneHumanoid.JumpHeight = 7.2
         end
+    end
+    
+    -- ✅ FIX: Stelle sicher, dass HipHeight konstant bleibt
+    if self.originalHipHeight and self.cloneHumanoid.HipHeight ~= self.originalHipHeight then
+        self.cloneHumanoid.HipHeight = self.originalHipHeight
     end
     
     local isJumping = UIS:IsKeyDown(Enum.KeyCode.Space)
@@ -1525,12 +1628,10 @@ function InvisibleSystem:Enable()
         return
     end
     
-    -- Disable fly if active
     if _G.VynxFlySystem and _G.VynxFlySystem.enabled then
         _G.VynxFlySystem:Disable()
     end
     
-    -- Create clone
     self.cloneCharacter, self.cloneRoot, self.cloneHumanoid = self:CreateClone()
     
     if not self.cloneRoot then
@@ -1542,10 +1643,8 @@ function InvisibleSystem:Enable()
     
     self.isActive = true
     
-    -- Make real character invisible
     self:MakeInvisible()
     
-    -- Setup connections
     self.teleportConnection = Services.RunService.RenderStepped:Connect(function()
         self:MakeInvisible()
     end)
@@ -1554,19 +1653,27 @@ function InvisibleSystem:Enable()
         self:ControlClone()
     end)
     
-    -- Set camera to clone
+    -- ✅ COLOR MAINTAIN: Nur alle 0.1 Sekunden prüfen (weniger Updates = kein Blenden)
+    local lastColorCheck = 0
+    self.colorMaintainConnection = Services.RunService.Heartbeat:Connect(function()
+        local now = tick()
+        if now - lastColorCheck >= 0.1 then
+            lastColorCheck = now
+            self:MaintainCloneColor()
+        end
+    end)
+    
     if self.cloneHumanoid then
         Camera.CameraSubject = self.cloneHumanoid
     end
     
-    print("[Vynx] ✅ Invisible Mode enabled")
+    print("[Vynx] ✅ Invisible Mode enabled (White Ghost) - HipHeight:", self.originalHipHeight)
     return true
 end
 
 function InvisibleSystem:Disable()
     if not self.isActive then return end
     
-    -- Stop animations
     for _, track in pairs(self.cloneAnimations) do
         if track then
             track:Stop()
@@ -1576,7 +1683,6 @@ function InvisibleSystem:Disable()
     self.currentAnimation = nil
     self.lastAnimationState = "Idle"
     
-    -- Get target position
     local targetCFrame = nil
     if self.cloneRoot and self.cloneRoot.Parent and self.cloneHumanoid then
         targetCFrame = self.cloneRoot.CFrame - Vector3.new(0, 0.2, 0)
@@ -1586,7 +1692,6 @@ function InvisibleSystem:Disable()
     
     self.isActive = false
     
-    -- Disconnect
     if self.teleportConnection then
         self.teleportConnection:Disconnect()
         self.teleportConnection = nil
@@ -1597,6 +1702,11 @@ function InvisibleSystem:Disable()
         self.movementConnection = nil
     end
     
+    if self.colorMaintainConnection then
+        self.colorMaintainConnection:Disconnect()
+        self.colorMaintainConnection = nil
+    end
+    
     local character = LocalPlayer.Character
     if not character then return end
     
@@ -1604,21 +1714,18 @@ function InvisibleSystem:Disable()
     local humanoid = character:FindFirstChild("Humanoid")
     if not hrp or not humanoid then return end
     
-    -- Remove body movers
     for _, obj in pairs(hrp:GetChildren()) do
         if obj:IsA("BodyMover") then
             obj:Destroy()
         end
     end
     
-    -- Anchor and position
     hrp.Anchored = true
     
     for i = 1, 5 do
         hrp.CFrame = targetCFrame
     end
     
-    -- Reset velocities
     hrp.AssemblyLinearVelocity = Vector3.zero
     hrp.AssemblyAngularVelocity = Vector3.zero
     hrp.Velocity = Vector3.zero
@@ -1626,20 +1733,22 @@ function InvisibleSystem:Disable()
     
     hrp.Anchored = false
     
-    -- Reset humanoid
     humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
     humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
     humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
     humanoid.AutoRotate = true
     humanoid.PlatformStand = false
     humanoid.Health = humanoid.MaxHealth
-    humanoid.HipHeight = 2
+    
+    -- ✅ FIX: Stelle die originale HipHeight wieder her
+    if self.originalHipHeight then
+        humanoid.HipHeight = self.originalHipHeight
+    end
     
     humanoid:ChangeState(Enum.HumanoidStateType.Running)
     
     task.wait(0.1)
     
-    -- Make visible
     for _, part in pairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
             if part.Name == "HumanoidRootPart" then
@@ -1669,7 +1778,6 @@ function InvisibleSystem:Disable()
     
     Camera.CameraSubject = humanoid
     
-    -- Destroy clone
     if self.cloneCharacter and self.cloneCharacter.Parent then
         self.cloneCharacter:Destroy()
     end
@@ -1678,7 +1786,7 @@ function InvisibleSystem:Disable()
     self.cloneRoot = nil
     self.cloneHumanoid = nil
     
-    print("[Vynx] ✅ Invisible Mode disabled")
+    print("[Vynx] ✅ Invisible Mode disabled - HipHeight restored:", self.originalHipHeight)
 end
 
 function InvisibleSystem:GetActiveCharacter()
