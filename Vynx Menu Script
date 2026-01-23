@@ -3449,9 +3449,9 @@ Utility.Create("UIGradient", {
 -- Advertisement function
 local function PostAdvertisement()
     local messages = {
-        "💎 VYNX MENU 💎 Das beste Roblox Menu!",
+        "💎VYNX MENU💎Das beste Roblox Menu!",
         "Exklusiv auf ScriptHub unter dem Namen Vynx Menu zu finden.",
-        "💙 Lasst Liebe da! 💙"
+        "💙Lasst Liebe da!💙"
     }
     
     local function sendMessage(text)
