@@ -3450,7 +3450,7 @@ Utility.Create("UIGradient", {
 local function PostAdvertisement()
     local messages = {
         "💎 VYNX MENU 💎 Das beste Roblox Menu!",
-        "Findet es auf Git Hub bei vynx 720 blip!",
+        "Exklusiv auf ScriptHub unter dem Namen Vynx Menu zu finden.",
         "💙 Lasst Liebe da! 💙"
     }
     
