@@ -148,7 +148,13 @@ local FeatureStates = {
         maxValue = 100,
         category = "Character"
     },
-    
+    XRay = {
+    enabled = false,
+    key = Enum.KeyCode.X,
+    value = 70,
+    maxValue = 100,
+    category = "Character"
+    },
     -- ESP Features
     ESPHighlight = {
         enabled = false,
@@ -1194,6 +1200,315 @@ end
 
 -- Global reference
 _G.VynxSpaceModeSystem = SpaceModeSystem
+
+-- ═══════════════════════════════════════════════════════════════
+-- XRAY SYSTEM - UNBEGRENZTE REICHWEITE (OPTIMIERT)
+-- ═══════════════════════════════════════════════════════════════
+
+local XRaySystem = {
+    enabled = false,
+    transparency = 0.7,
+    
+    -- Caching
+    processedParts = {},
+    terrainMaterials = {},
+    
+    -- Connections
+    descendantAddedConnection = nil,
+    descendantRemovingConnection = nil,
+    
+    -- Performance Settings
+    skipSmallParts = true, -- Kleine Parts überspringen für Performance
+    batchSize = 200, -- Parts pro Frame beim Enable
+}
+
+function XRaySystem:IsPlayerCharacterPart(part)
+    local current = part
+    
+    while current do
+        if current:IsA("Model") then
+            local humanoid = current:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                for _, player in pairs(Services.Players:GetPlayers()) do
+                    if player.Character == current then
+                        return true
+                    end
+                end
+            end
+        end
+        
+        if current:IsA("Accessory") then
+            local character = current.Parent
+            if character and character:IsA("Model") then
+                local humanoid = character:FindFirstChildOfClass("Humanoid")
+                if humanoid then
+                    for _, player in pairs(Services.Players:GetPlayers()) do
+                        if player.Character == character then
+                            return true
+                        end
+                    end
+                end
+            end
+        end
+        
+        current = current.Parent
+        
+        if current == Services.Workspace then
+            break
+        end
+    end
+    
+    return false
+end
+
+function XRaySystem:ShouldProcess(part)
+    -- Player-Check
+    if self:IsPlayerCharacterPart(part) then 
+        return false 
+    end
+    
+    -- Skip already transparent
+    if part.Transparency >= 0.95 then 
+        return false 
+    end
+    
+    -- Skip very small parts (Performance!)
+    if self.skipSmallParts then
+        local size = part.Size
+        if size.X < 1 and size.Y < 1 and size.Z < 1 then
+            return false
+        end
+    end
+    
+    -- KEIN DISTANCE CHECK MEHR!
+    
+    return true
+end
+
+function XRaySystem:ApplyToPart(part)
+    if not part or not part:IsA("BasePart") then return end
+    if self.processedParts[part] then return end
+    
+    if self:ShouldProcess(part) then
+        self.processedParts[part] = part.Transparency
+        part.Transparency = self.transparency
+    end
+end
+
+function XRaySystem:RestorePart(part)
+    local originalTransparency = self.processedParts[part]
+    if originalTransparency then
+        if part and part.Parent then
+            part.Transparency = originalTransparency
+        end
+        self.processedParts[part] = nil
+    end
+end
+
+function XRaySystem:ProcessTerrain()
+    local terrain = Services.Workspace:FindFirstChildOfClass("Terrain")
+    if not terrain then return end
+    
+    Utility.SafeCall(function()
+        terrain.WaterTransparency = math.min(self.transparency + 0.2, 1)
+        terrain.WaterWaveSize = 0
+        terrain.WaterWaveSpeed = 0
+        terrain.Decoration = false
+        
+        local materials = {
+            Enum.Material.Grass,
+            Enum.Material.Slate,
+            Enum.Material.Concrete,
+            Enum.Material.Brick,
+            Enum.Material.Sand,
+            Enum.Material.WoodPlanks,
+            Enum.Material.Rock,
+            Enum.Material.Glacier,
+            Enum.Material.Snow,
+            Enum.Material.Sandstone,
+            Enum.Material.Mud,
+            Enum.Material.Basalt,
+            Enum.Material.Ground,
+            Enum.Material.CrackedLava,
+            Enum.Material.Asphalt,
+            Enum.Material.Cobblestone,
+            Enum.Material.Ice,
+            Enum.Material.LeafyGrass,
+            Enum.Material.Salt,
+            Enum.Material.Limestone,
+            Enum.Material.Pavement,
+        }
+        
+        for _, material in pairs(materials) do
+            local color = terrain:GetMaterialColor(material)
+            if not self.terrainMaterials[material] then
+                self.terrainMaterials[material] = color
+            end
+            
+            local r = math.min(color.R + (1 - color.R) * self.transparency, 1)
+            local g = math.min(color.G + (1 - color.G) * self.transparency, 1)
+            local b = math.min(color.B + (1 - color.B) * self.transparency, 1)
+            
+            terrain:SetMaterialColor(material, Color3.new(r, g, b))
+        end
+    end)
+end
+
+function XRaySystem:RestoreTerrain()
+    local terrain = Services.Workspace:FindFirstChildOfClass("Terrain")
+    if not terrain then return end
+    
+    Utility.SafeCall(function()
+        terrain.WaterTransparency = 0.3
+        terrain.WaterWaveSize = 0.15
+        terrain.WaterWaveSpeed = 10
+        terrain.Decoration = true
+        
+        for material, originalColor in pairs(self.terrainMaterials) do
+            terrain:SetMaterialColor(material, originalColor)
+        end
+        
+        self.terrainMaterials = {}
+    end)
+end
+
+function XRaySystem:Enable()
+    if self.enabled then return end
+    
+    self.enabled = true
+    self.transparency = FeatureStates.XRay.value / 100
+    self.processedParts = {}
+    self.terrainMaterials = {}
+    
+    print("[Vynx X-Ray] Enabling (UNLIMITED RANGE)...")
+    
+    -- BATCH PROCESSING: Um Lag zu vermeiden
+    task.spawn(function()
+        local allParts = {}
+        
+        -- Sammle alle Parts
+        for _, part in pairs(Services.Workspace:GetDescendants()) do
+            if part:IsA("BasePart") then
+                table.insert(allParts, part)
+            end
+        end
+        
+        local total = #allParts
+        local processed = 0
+        local skipped = 0
+        
+        print(string.format("[Vynx X-Ray] Found %d total parts, processing in batches...", total))
+        
+        -- Verarbeite in Batches
+        for i = 1, total, self.batchSize do
+            if not self.enabled then break end
+            
+            local endIndex = math.min(i + self.batchSize - 1, total)
+            
+            for j = i, endIndex do
+                local part = allParts[j]
+                if self:ShouldProcess(part) then
+                    self:ApplyToPart(part)
+                    processed = processed + 1
+                else
+                    skipped = skipped + 1
+                end
+            end
+            
+            -- Kleine Pause zwischen Batches
+            if endIndex < total then
+                task.wait()
+            end
+        end
+        
+        print(string.format("[Vynx X-Ray] ✅ %d processed, %d skipped", processed, skipped))
+    end)
+    
+    -- Terrain sofort verarbeiten
+    self:ProcessTerrain()
+    
+    -- Event-Based: Neue Parts
+    self.descendantAddedConnection = Services.Workspace.DescendantAdded:Connect(function(descendant)
+        if not self.enabled then return end
+        
+        task.wait(0.05)
+        
+        if descendant:IsA("BasePart") then
+            self:ApplyToPart(descendant)
+        end
+    end)
+    
+    -- Auto-Cleanup
+    self.descendantRemovingConnection = Services.Workspace.DescendantRemoving:Connect(function(descendant)
+        if not self.enabled then return end
+        
+        if descendant:IsA("BasePart") and self.processedParts[descendant] then
+            self.processedParts[descendant] = nil
+        end
+    end)
+end
+
+function XRaySystem:Disable()
+    if not self.enabled then return end
+    
+    -- Stop Connections
+    if self.descendantAddedConnection then
+        self.descendantAddedConnection:Disconnect()
+        self.descendantAddedConnection = nil
+    end
+    
+    if self.descendantRemovingConnection then
+        self.descendantRemovingConnection:Disconnect()
+        self.descendantRemovingConnection = nil
+    end
+    
+    self.enabled = false
+    
+    print("[Vynx X-Ray] Restoring...")
+    
+    -- DOPPEL-CHECK: Alle Parts im Workspace durchgehen
+    local restored = 0
+    local checked = 0
+    
+    task.spawn(function()
+        -- Methode 1: Aus Cache restoren
+        for part, originalTransparency in pairs(self.processedParts) do
+            if part and part.Parent then
+                part.Transparency = originalTransparency
+                restored = restored + 1
+            end
+        end
+        
+        -- Methode 2: SICHERHEITS-CHECK - Alle Parts im Workspace prüfen
+        for _, part in pairs(Services.Workspace:GetDescendants()) do
+            if part:IsA("BasePart") then
+                checked = checked + 1
+                
+                -- Wenn Part im Cache war aber nicht restored wurde
+                if self.processedParts[part] and part.Transparency ~= self.processedParts[part] then
+                    part.Transparency = self.processedParts[part]
+                    restored = restored + 1
+                end
+                
+                -- Alle 200 Parts Pause
+                if checked % 200 == 0 then
+                    task.wait()
+                end
+            end
+        end
+        
+        -- Cache leeren
+        self.processedParts = {}
+        
+        print(string.format("[Vynx X-Ray] ✅ Restored %d parts (checked %d total)", restored, checked))
+    end)
+    
+    -- Terrain restore
+    self:RestoreTerrain()
+end
+
+-- Global reference
+_G.VynxXRaySystem = XRaySystem
 
 -- ═══════════════════════════════════════════════════════════════
 -- INVISIBLE MODE SYSTEM - CLONE-BASED (OHNE BLENDEN-EFFEKT) - FIXED FÜR CUSTOM CHARACTER SIZE
@@ -3456,6 +3771,13 @@ function ToggleFeature(featureName, enabled)
         else
             _G.VynxESPSystem:DisableNametags()
         end
+        
+    elseif featureName == "XRay" then
+        if enabled then
+            _G.VynxXRaySystem:Enable()
+        else
+            _G.VynxXRaySystem:Disable()
+        end
     end
 end
 
@@ -3498,6 +3820,11 @@ function ApplyFeatureValue(featureName, value)
             if nametag and nametag:FindFirstChild("TextLabel") then
                 nametag.TextLabel.TextSize = value
             end
+        end
+    
+    elseif featureName == "XRay" then
+        if _G.VynxXRaySystem.enabled then
+            _G.VynxXRaySystem:UpdateTransparency(value)
         end
     end
 end
@@ -3625,6 +3952,7 @@ CreateFeatureCard("Noclip", "🚪", "Noclip", "Walk through walls", 5, Character
 CreateFeatureCard("SpinCharacter", "🌀", "Spin Character", "Rotate continuously", 6, CharacterPage)
 CreateFeatureCard("Ragdoll", "🤸", "Ragdoll", "Fall like a ragdoll", 7, CharacterPage)
 CreateFeatureCard("SpaceMode", "🚀", "Space Mode", "Zero gravity flight", 8, CharacterPage)
+CreateFeatureCard("XRay", "🔍", "X-Ray Vision", "See through walls", 9, CharacterPage)
 
 -- ═══════════════════════════════════════════════════════════════
 -- PLAYERS PAGE
@@ -6256,6 +6584,13 @@ LocalPlayer.CharacterAdded:Connect(function()
     -- Stop mimic
     if _G.VynxMimicSystem.enabled then
         _G.VynxMimicSystem:Disable()
+    end
+    
+    -- Re-enable X-Ray if active
+    if _G.VynxXRaySystem.enabled then
+        _G.VynxXRaySystem:Disable()
+        task.wait(0.2)
+        _G.VynxXRaySystem:Enable()
     end
 end)
 
