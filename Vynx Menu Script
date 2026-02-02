@@ -155,6 +155,13 @@ local FeatureStates = {
     maxValue = 100,
     category = "Character"
     },
+    Godmode = {
+    enabled = false,
+    key = Enum.KeyCode.H,
+    value = 0,
+    maxValue = 0,
+    category = "Character"
+    },
     -- ESP Features
     ESPHighlight = {
         enabled = false,
@@ -1509,6 +1516,288 @@ end
 
 -- Global reference
 _G.VynxXRaySystem = XRaySystem
+
+-- ═══════════════════════════════════════════════════════════════
+-- GODMODE SYSTEM - ANTI-DAMAGE METHOD
+-- Verhindert Damage BEVOR er passiert!
+-- ═══════════════════════════════════════════════════════════════
+
+local GodmodeSystem = {
+    enabled = false,
+    connections = {},
+    
+    -- Original Character References
+    originalCharacter = nil,
+    originalHumanoid = nil,
+}
+
+function GodmodeSystem:GetTargetCharacter()
+    if _G.VynxInvisibleSystem and _G.VynxInvisibleSystem.isActive and _G.VynxInvisibleSystem.cloneCharacter then
+        return _G.VynxInvisibleSystem.cloneCharacter
+    end
+    return LocalPlayer.Character
+end
+
+function GodmodeSystem:ClearConnections()
+    for _, conn in pairs(self.connections) do
+        if conn then
+            pcall(function() conn:Disconnect() end)
+        end
+    end
+    self.connections = {}
+end
+
+function GodmodeSystem:BlockAllDamage(character)
+    if not character then return end
+    
+    -- Make ALL parts completely non-collidable with damage sources
+    for _, part in pairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            -- Set collision group to avoid damage
+            part.CanCollide = false
+            part.CanTouch = false  -- Prevents Touched events
+            
+            -- Make massless to avoid physics damage
+            part.Massless = true
+        end
+    end
+end
+
+function GodmodeSystem:Enable()
+    if self.enabled then return end
+    
+    local character = self:GetTargetCharacter()
+    if not character then 
+        print("[Vynx] ❌ No character!")
+        return 
+    end
+    
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then 
+        print("[Vynx] ❌ No humanoid!")
+        return 
+    end
+    
+    self.enabled = true
+    self.originalCharacter = character
+    self.originalHumanoid = humanoid
+    
+    print("[Vynx] 🛡️ ANTI-DAMAGE GODMODE ENABLING...")
+    
+    -- METHOD 1: Max out health to extreme value
+    humanoid.MaxHealth = 1e308  -- Max float value
+    humanoid.Health = 1e308
+    
+    -- METHOD 2: Disable ALL damage-related states
+    for _, state in pairs(Enum.HumanoidStateType:GetEnumItems()) do
+        pcall(function()
+            humanoid:SetStateEnabled(state, state == Enum.HumanoidStateType.Running or state == Enum.HumanoidStateType.RunningNoPhysics)
+        end)
+    end
+    
+    -- METHOD 3: Add invisible ForceFields (x20)
+    for i = 1, 20 do
+        local ff = Instance.new("ForceField")
+        ff.Visible = false
+        ff.Parent = character
+    end
+    
+    -- METHOD 4: Block collision damage
+    self:BlockAllDamage(character)
+    
+    -- METHOD 5: Health Lock (Triple Layer)
+    -- Layer A: RenderStepped (highest priority)
+    local renderConn = Services.RunService.RenderStepped:Connect(function()
+        if not self.enabled then return end
+        
+        local char = self:GetTargetCharacter()
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        
+        if hum and hum.Health < 1e308 then
+            hum.Health = 1e308
+        end
+    end)
+    table.insert(self.connections, renderConn)
+    
+    -- Layer B: Heartbeat
+    local heartbeatConn = Services.RunService.Heartbeat:Connect(function()
+        if not self.enabled then return end
+        
+        local char = self:GetTargetCharacter()
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        
+        if hum and hum.Health < 1e308 then
+            hum.Health = 1e308
+        end
+    end)
+    table.insert(self.connections, heartbeatConn)
+    
+    -- Layer C: Stepped
+    local steppedConn = Services.RunService.Stepped:Connect(function()
+        if not self.enabled then return end
+        
+        local char = self:GetTargetCharacter()
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        
+        if hum and hum.Health < 1e308 then
+            hum.Health = 1e308
+        end
+    end)
+    table.insert(self.connections, steppedConn)
+    
+    -- METHOD 6: Event-based protection
+    local healthChangedConn = humanoid.HealthChanged:Connect(function(health)
+        if not self.enabled then return end
+        
+        if health < 1e308 then
+            print("[Vynx] 🛡️ DAMAGE BLOCKED! Restoring health...")
+            
+            -- Massive parallel restore
+            for i = 1, 200 do
+                task.spawn(function()
+                    humanoid.Health = 1e308
+                end)
+            end
+        end
+    end)
+    table.insert(self.connections, healthChangedConn)
+    
+    local diedConn = humanoid.Died:Connect(function()
+        if not self.enabled then return end
+        
+        print("[Vynx] 🛡️ DEATH EVENT INTERCEPTED!")
+        
+        -- Emergency revival
+        for i = 1, 500 do
+            task.spawn(function()
+                humanoid.Health = 1e308
+                humanoid:ChangeState(Enum.HumanoidStateType.Running)
+            end)
+        end
+    end)
+    table.insert(self.connections, diedConn)
+    
+    -- METHOD 7: Background ultra-fast loop
+    task.spawn(function()
+        while self.enabled do
+            local char = self:GetTargetCharacter()
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            
+            if hum then
+                -- Force health
+                if hum.Health ~= 1e308 then
+                    hum.Health = 1e308
+                end
+                
+                -- Verify ForceFields
+                local ffCount = 0
+                for _, child in pairs(char:GetChildren()) do
+                    if child:IsA("ForceField") then
+                        ffCount = ffCount + 1
+                    end
+                end
+                
+                if ffCount < 10 then
+                    for i = 1, 20 do
+                        local ff = Instance.new("ForceField")
+                        ff.Visible = false
+                        ff.Parent = char
+                    end
+                end
+                
+                -- Maintain collision blocking
+                for _, part in pairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") and part.CanCollide then
+                        part.CanCollide = false
+                    end
+                end
+            end
+            
+            task.wait() -- Minimal delay
+        end
+    end)
+    
+    -- METHOD 8: CharacterAdded handler
+    local charConn = LocalPlayer.CharacterAdded:Connect(function(newChar)
+        if not self.enabled then return end
+        
+        print("[Vynx] 🛡️ Character respawned - reapplying godmode!")
+        self:ClearConnections()
+        task.wait(0.5)
+        self:Enable()
+    end)
+    table.insert(self.connections, charConn)
+    
+    -- METHOD 9: DescendantAdded (for new parts)
+    local descConn = character.DescendantAdded:Connect(function(descendant)
+        if not self.enabled then return end
+        
+        if descendant:IsA("BasePart") then
+            task.wait()
+            descendant.CanCollide = false
+            descendant.CanTouch = false
+            descendant.Massless = true
+        end
+    end)
+    table.insert(self.connections, descConn)
+    
+    print("[Vynx] ✅ ANTI-DAMAGE GODMODE ACTIVE!")
+    print("[Vynx] 🛡️ 9 Protection Methods Active")
+end
+
+function GodmodeSystem:Disable()
+    if not self.enabled then return end
+    
+    print("[Vynx] 🛡️ Disabling Anti-Damage Godmode...")
+    
+    self.enabled = false
+    self:ClearConnections()
+    
+    local character = self:GetTargetCharacter()
+    if character then
+        -- Remove ForceFields
+        for _, child in pairs(character:GetChildren()) do
+            if child:IsA("ForceField") then
+                child:Destroy()
+            end
+        end
+        
+        -- Restore collision
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                if part.Name == "HumanoidRootPart" then
+                    part.CanCollide = true
+                else
+                    part.CanCollide = false
+                end
+                part.CanTouch = true
+                part.Massless = false
+            end
+        end
+        
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            -- Restore health
+            humanoid.MaxHealth = 100
+            humanoid.Health = 100
+            
+            -- Re-enable states
+            for _, state in pairs(Enum.HumanoidStateType:GetEnumItems()) do
+                pcall(function()
+                    humanoid:SetStateEnabled(state, true)
+                end)
+            end
+            
+            -- Force running state
+            humanoid:ChangeState(Enum.HumanoidStateType.Running)
+        end
+    end
+    
+    print("[Vynx] ✅ Anti-Damage Godmode disabled")
+end
+
+-- Global reference
+_G.VynxGodmodeSystem = GodmodeSystem
 
 -- ═══════════════════════════════════════════════════════════════
 -- INVISIBLE MODE SYSTEM - CLONE-BASED (OHNE BLENDEN-EFFEKT) - FIXED FÜR CUSTOM CHARACTER SIZE
@@ -3778,6 +4067,13 @@ function ToggleFeature(featureName, enabled)
         else
             _G.VynxXRaySystem:Disable()
         end
+        
+    elseif featureName == "Godmode" then
+        if enabled then
+            _G.VynxGodmodeSystem:Enable()
+        else
+            _G.VynxGodmodeSystem:Disable()
+        end
     end
 end
 
@@ -3953,6 +4249,7 @@ CreateFeatureCard("SpinCharacter", "🌀", "Spin Character", "Rotate continuousl
 CreateFeatureCard("Ragdoll", "🤸", "Ragdoll", "Fall like a ragdoll", 7, CharacterPage)
 CreateFeatureCard("SpaceMode", "🚀", "Space Mode", "Zero gravity flight", 8, CharacterPage)
 CreateFeatureCard("XRay", "🔍", "X-Ray Vision", "See through walls", 9, CharacterPage)
+CreateFeatureCard("Godmode", "🛡️", "Godmode", "Invincibility mode", 10, CharacterPage)
 
 -- ═══════════════════════════════════════════════════════════════
 -- PLAYERS PAGE
@@ -6591,6 +6888,13 @@ LocalPlayer.CharacterAdded:Connect(function()
         _G.VynxXRaySystem:Disable()
         task.wait(0.2)
         _G.VynxXRaySystem:Enable()
+    end
+    
+    -- Re-enable Godmode if active
+    if _G.VynxGodmodeSystem.enabled then
+        _G.VynxGodmodeSystem:Disable()
+        task.wait(0.2)
+        _G.VynxGodmodeSystem:Enable()
     end
 end)
 
