@@ -162,6 +162,14 @@ local FeatureStates = {
     maxValue = 0,
     category = "Character"
     },
+    DashStrafe = {
+    enabled = false,
+    key = Enum.KeyCode.B,
+    value = 50,        -- Dash-Geschwindigkeit
+    maxValue = 1000,
+    dashDistance = 5,  -- Wie weit nach links/rechts
+    category = "Character"
+    },
     -- ESP Features
     ESPHighlight = {
         enabled = false,
@@ -262,6 +270,7 @@ function SettingsManager.Save()
                 enabled = false, -- Niemals enabled-State speichern
                 key = featureData.key and featureData.key.Name or nil,
                 value = featureData.value,
+                dashDistance = featureData.dashDistance or nil,  -- ✅ NEU: Speichere dashDistance
                 color = featureData.color and {
                     R = featureData.color.R,
                     G = featureData.color.G,
@@ -310,6 +319,10 @@ function SettingsManager.Load()
                     
                     if savedData.value then
                         FeatureStates[featureName].value = savedData.value
+                    end
+                    
+                    if savedData.dashDistance then  -- ✅ NEU: Lade dashDistance
+                        FeatureStates[featureName].dashDistance = savedData.dashDistance
                     end
                     
                     if savedData.color then
@@ -1798,6 +1811,128 @@ end
 
 -- Global reference
 _G.VynxGodmodeSystem = GodmodeSystem
+
+-- ═══════════════════════════════════════════════════════════════
+-- DASH/STRAFE SYSTEM - AUTOMATIC LEFT/RIGHT MOVEMENT
+-- ═══════════════════════════════════════════════════════════════
+
+local DashStrafeSystem = {
+    enabled = false,
+    connection = nil,
+    movingRight = true, -- true = rechts, false = links
+    currentDistance = 0,
+    speed = 50,
+    maxDistance = 5,
+    startPosition = nil,
+    startCFrame = nil
+}
+
+function DashStrafeSystem:GetTargetCharacter()
+    if _G.VynxInvisibleSystem and _G.VynxInvisibleSystem.isActive and _G.VynxInvisibleSystem.cloneCharacter then
+        return _G.VynxInvisibleSystem.cloneCharacter
+    end
+    return LocalPlayer.Character
+end
+
+function DashStrafeSystem:Enable()
+    if self.enabled then return end
+    
+    local character = self:GetTargetCharacter()
+    if not character then return end
+    
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    self.enabled = true
+    self.speed = FeatureStates.DashStrafe.value
+    self.maxDistance = FeatureStates.DashStrafe.dashDistance
+    self.currentDistance = 0
+    self.movingRight = true
+    self.startPosition = hrp.Position
+    self.startCFrame = hrp.CFrame
+    
+    print("[Vynx] 💨 Dash/Strafe enabled")
+    print("   Speed:", self.speed, "studs/sec")
+    print("   Distance:", self.maxDistance, "studs each side")
+    
+    self:StartUpdateLoop()
+end
+
+function DashStrafeSystem:StartUpdateLoop()
+    if self.connection then
+        self.connection:Disconnect()
+    end
+    
+    self.connection = Services.RunService.Heartbeat:Connect(function(deltaTime)
+        if not self.enabled then return end
+        
+        local character = self:GetTargetCharacter()
+        if not character then
+            self:Disable()
+            return
+        end
+        
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        
+        if not hrp or not humanoid then
+            self:Disable()
+            return
+        end
+        
+        -- Update values from UI (live änderbar)
+        self.speed = FeatureStates.DashStrafe.value
+        self.maxDistance = FeatureStates.DashStrafe.dashDistance
+        
+        -- Berechne Bewegungsrichtung relativ zum Character
+        local lookVector = hrp.CFrame.LookVector
+        local rightVector = hrp.CFrame.RightVector
+        
+        -- Berechne Bewegung für diesen Frame
+        local moveDistance = self.speed * deltaTime
+        
+        -- Bewege in aktuelle Richtung
+        if self.movingRight then
+            self.currentDistance = self.currentDistance + moveDistance
+            
+            -- Wenn Maximum erreicht, Richtung wechseln
+            if self.currentDistance >= self.maxDistance then
+                self.currentDistance = self.maxDistance
+                self.movingRight = false
+            end
+        else
+            self.currentDistance = self.currentDistance - moveDistance
+            
+            -- Wenn Minimum erreicht, Richtung wechseln
+            if self.currentDistance <= -self.maxDistance then
+                self.currentDistance = -self.maxDistance
+                self.movingRight = true
+            end
+        end
+        
+        -- Wende Bewegung an (additiv zur Spielerbewegung)
+        local strafeOffset = rightVector * (self.movingRight and moveDistance or -moveDistance)
+        hrp.CFrame = hrp.CFrame + strafeOffset
+    end)
+end
+
+function DashStrafeSystem:Disable()
+    if not self.enabled then return end
+    
+    if self.connection then
+        self.connection:Disconnect()
+        self.connection = nil
+    end
+    
+    self.enabled = false
+    self.currentDistance = 0
+    self.movingRight = true
+    
+    print("[Vynx] ✅ Dash/Strafe disabled")
+end
+
+-- Global reference
+_G.VynxDashStrafeSystem = DashStrafeSystem
 
 -- ═══════════════════════════════════════════════════════════════
 -- INVISIBLE MODE SYSTEM - CLONE-BASED (OHNE BLENDEN-EFFEKT) - FIXED FÜR CUSTOM CHARACTER SIZE
@@ -4074,6 +4209,13 @@ function ToggleFeature(featureName, enabled)
         else
             _G.VynxGodmodeSystem:Disable()
         end
+
+    elseif featureName == "DashStrafe" then
+        if enabled then
+            _G.VynxDashStrafeSystem:Enable()
+        else
+            _G.VynxDashStrafeSystem:Disable()
+        end
     end
 end
 
@@ -4250,6 +4392,441 @@ CreateFeatureCard("Ragdoll", "🤸", "Ragdoll", "Fall like a ragdoll", 7, Charac
 CreateFeatureCard("SpaceMode", "🚀", "Space Mode", "Zero gravity flight", 8, CharacterPage)
 CreateFeatureCard("XRay", "🔍", "X-Ray Vision", "See through walls", 9, CharacterPage)
 CreateFeatureCard("Godmode", "🛡️", "Godmode", "Invincibility mode", 10, CharacterPage)
+
+-- ═══════════════════════════════════════════════════════════════
+-- DASH FEATURE CARD (DOUBLE SLIDER)
+-- ═══════════════════════════════════════════════════════════════
+
+local function CreateDashFeatureCard(featureName, icon, title, desc, order, parent)
+ local featureData = FeatureStates[featureName]
+    if not featureData then return end
+    
+    local cardHeight = 350 -- Höher wegen 2 Slidern
+    
+    local Card = Utility.Create("Frame", {
+        Name = featureName .. "Card",
+        Size = UDim2.new(1, 0, 0, cardHeight),
+        BackgroundColor3 = Theme.BackgroundLight,
+        BackgroundTransparency = 0.3,
+        BorderSizePixel = 0,
+        LayoutOrder = order,
+        Parent = parent
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 12),
+        Parent = Card
+    })
+    
+    Utility.Create("UIStroke", {
+        Color = Theme.Border,
+        Thickness = 1,
+        Transparency = 0.7,
+        Parent = Card
+    })
+    
+    -- Header (gleich wie normale Cards)
+    local Header = Utility.Create("Frame", {
+        Name = "Header",
+        Size = UDim2.new(1, 0, 0, 50),
+        BackgroundTransparency = 1,
+        Parent = Card
+    })
+    
+    local Icon = Utility.Create("TextLabel", {
+        Size = UDim2.new(0, 35, 0, 35),
+        Position = UDim2.new(0, 15, 0, 8),
+        BackgroundColor3 = Theme.Primary,
+        BackgroundTransparency = 0.8,
+        Text = icon,
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 18,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+        Parent = Header
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 8),
+        Parent = Icon
+    })
+    
+    local TitleLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.4, -60, 0, 22),
+        Position = UDim2.new(0, 60, 0, 8),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 16,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Header
+    })
+    
+    local DescLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.4, -60, 0, 16),
+        Position = UDim2.new(0, 60, 0, 28),
+        BackgroundTransparency = 1,
+        Text = desc,
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 11,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Header
+    })
+    
+    local ToggleButton = Utility.Create("TextButton", {
+        Name = "ToggleButton",
+        Size = UDim2.new(0, 70, 0, 35),
+        Position = UDim2.new(1, -85, 0, 8),
+        BackgroundColor3 = featureData.enabled and Theme.Success or Theme.Surface,
+        BackgroundTransparency = 0.2,
+        Text = featureData.enabled and "ON" or "OFF",
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 13,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Parent = Header
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 8),
+        Parent = ToggleButton
+    })
+    
+    Utility.Create("UIStroke", {
+        Color = featureData.enabled and Theme.Success or Theme.Border,
+        Thickness = 1,
+        Transparency = 0.5,
+        Parent = ToggleButton
+    })
+    
+    -- Keybind
+    local KeybindFrame = Utility.Create("Frame", {
+        Size = UDim2.new(1, -30, 0, 50),
+        Position = UDim2.new(0, 15, 0, 60),
+        BackgroundTransparency = 1,
+        Parent = Card
+    })
+    
+    local KeybindLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.5, 0, 0, 30),
+        BackgroundTransparency = 1,
+        Text = "Toggle Key (ESC = Clear)",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 11,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = KeybindFrame
+    })
+    
+    local KeybindButton = Utility.Create("TextButton", {
+        Name = "KeybindBtn",
+        Size = UDim2.new(0, 100, 0, 35),
+        Position = UDim2.new(1, -100, 0, 0),
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = 0.3,
+        Text = featureData.key and featureData.key.Name or "None",
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Parent = KeybindFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 8),
+        Parent = KeybindButton
+    })
+    
+    local listeningForKey = false
+    
+    KeybindButton.MouseButton1Click:Connect(function()
+        if not listeningForKey then
+            listeningForKey = true
+            KeybindButton.Text = "Press..."
+            KeybindButton.BackgroundColor3 = Theme.Warning
+        end
+    end)
+    
+    Services.UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if listeningForKey and input.UserInputType == Enum.UserInputType.Keyboard then
+            if input.KeyCode == Enum.KeyCode.Escape then
+                featureData.key = nil
+                KeybindButton.Text = "None"
+                KeybindButton.BackgroundColor3 = Theme.Surface
+                listeningForKey = false
+            else
+                featureData.key = input.KeyCode
+                KeybindButton.Text = input.KeyCode.Name
+                KeybindButton.BackgroundColor3 = Theme.Surface
+                listeningForKey = false
+            end
+        end
+    end)
+    
+    -- ═══ SLIDER 1: SPEED ═══
+    local SpeedSliderFrame = Utility.Create("Frame", {
+        Size = UDim2.new(1, -30, 0, 60),
+        Position = UDim2.new(0, 15, 0, 120),
+        BackgroundTransparency = 1,
+        Parent = Card
+    })
+    
+    local SpeedLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.6, 0, 0, 20),
+        BackgroundTransparency = 1,
+        Text = "Dash Speed",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 12,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = SpeedSliderFrame
+    })
+    
+    local SpeedValue = Utility.Create("TextBox", {
+        Size = UDim2.new(0, 60, 0, 22),
+        Position = UDim2.new(1, -60, 0, -1),
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = 0.5,
+        BorderSizePixel = 0,
+        Text = tostring(featureData.value),
+        TextColor3 = Theme.Primary,
+        TextSize = 13,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ClearTextOnFocus = false,
+        Parent = SpeedSliderFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 6),
+        Parent = SpeedValue
+    })
+    
+    local SpeedSliderBack = Utility.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 8),
+        Position = UDim2.new(0, 0, 0, 35),
+        BackgroundColor3 = Theme.Surface,
+        BorderSizePixel = 0,
+        Parent = SpeedSliderFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+        Parent = SpeedSliderBack
+    })
+    
+    local SpeedSliderFill = Utility.Create("Frame", {
+        Size = UDim2.new(featureData.value / featureData.maxValue, 0, 1, 0),
+        BackgroundColor3 = Theme.Primary,
+        BorderSizePixel = 0,
+        Parent = SpeedSliderBack
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+        Parent = SpeedSliderFill
+    })
+    
+    Utility.Create("UIGradient", {
+        Color = ColorSequence.new{
+            ColorSequenceKeypoint.new(0, Theme.Primary),
+            ColorSequenceKeypoint.new(1, Theme.PrimaryLight)
+        },
+        Parent = SpeedSliderFill
+    })
+    
+    local SpeedSliderButton = Utility.Create("TextButton", {
+        Size = UDim2.new(1, 0, 1, 10),
+        Position = UDim2.new(0, 0, 0, -5),
+        BackgroundTransparency = 1,
+        Text = "",
+        Parent = SpeedSliderBack
+    })
+    
+    local speedDragging = false
+    
+    SpeedSliderButton.MouseButton1Down:Connect(function()
+        speedDragging = true
+    end)
+    
+    Services.UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            speedDragging = false
+        end
+    end)
+    
+    SpeedValue.FocusLost:Connect(function()
+        local inputValue = tonumber(SpeedValue.Text)
+        if inputValue then
+            inputValue = math.clamp(inputValue, 0, featureData.maxValue)
+            featureData.value = inputValue
+            SpeedValue.Text = tostring(inputValue)
+            SpeedSliderFill.Size = UDim2.new(inputValue / featureData.maxValue, 0, 1, 0)
+            -- Wert wird automatisch im Heartbeat-Loop gelesen
+        else
+            SpeedValue.Text = tostring(featureData.value)
+        end
+    end)
+    
+    SpeedSliderButton.MouseMoved:Connect(function(x, y)
+        if speedDragging then
+            local relativeX = math.clamp((x - SpeedSliderBack.AbsolutePosition.X) / SpeedSliderBack.AbsoluteSize.X, 0, 1)
+            local value = math.floor(relativeX * featureData.maxValue)
+            featureData.value = value
+            SpeedSliderFill.Size = UDim2.new(relativeX, 0, 1, 0)
+            SpeedValue.Text = tostring(value)
+            -- Wert wird automatisch im Heartbeat-Loop gelesen
+        end
+    end)
+    
+    -- ═══ SLIDER 2: DISTANCE ═══
+    local DistSliderFrame = Utility.Create("Frame", {
+        Size = UDim2.new(1, -30, 0, 60),
+        Position = UDim2.new(0, 15, 0, 190),
+        BackgroundTransparency = 1,
+        Parent = Card
+    })
+    
+    local DistLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.6, 0, 0, 20),
+        BackgroundTransparency = 1,
+        Text = "Dash Distance (Studs)",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 12,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = DistSliderFrame
+    })
+    
+    local DistValue = Utility.Create("TextBox", {
+        Size = UDim2.new(0, 60, 0, 22),
+        Position = UDim2.new(1, -60, 0, -1),
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = 0.5,
+        BorderSizePixel = 0,
+        Text = tostring(featureData.dashDistance or 5),
+        TextColor3 = Theme.Primary,  -- ✅ GLEICHE FARBE WIE SPEED
+        TextSize = 13,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ClearTextOnFocus = false,
+        Parent = DistSliderFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 6),
+        Parent = DistValue
+    })
+    
+    local DistSliderBack = Utility.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 8),
+        Position = UDim2.new(0, 0, 0, 35),
+        BackgroundColor3 = Theme.Surface,
+        BorderSizePixel = 0,
+        Parent = DistSliderFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+        Parent = DistSliderBack
+    })
+    
+    local maxDist = 50
+    local DistSliderFill = Utility.Create("Frame", {
+        Size = UDim2.new((featureData.dashDistance or 5) / maxDist, 0, 1, 0),
+        BackgroundColor3 = Theme.Primary,  -- ✅ GLEICHE FARBE WIE SPEED
+        BorderSizePixel = 0,
+        Parent = DistSliderBack
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+        Parent = DistSliderFill
+    })
+    
+    Utility.Create("UIGradient", {
+        Color = ColorSequence.new{
+            ColorSequenceKeypoint.new(0, Theme.Primary),      -- ✅ LILA
+            ColorSequenceKeypoint.new(1, Theme.PrimaryLight)  -- ✅ HELLES LILA
+        },
+        Parent = DistSliderFill
+    })
+    
+    local DistSliderButton = Utility.Create("TextButton", {
+        Size = UDim2.new(1, 0, 1, 10),
+        Position = UDim2.new(0, 0, 0, -5),
+        BackgroundTransparency = 1,
+        Text = "",
+        Parent = DistSliderBack
+    })
+    
+    local distDragging = false
+    
+    DistSliderButton.MouseButton1Down:Connect(function()
+        distDragging = true
+    end)
+    
+    Services.UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            distDragging = false
+        end
+    end)
+    
+    DistValue.FocusLost:Connect(function()
+        local inputValue = tonumber(DistValue.Text)
+        if inputValue then
+            inputValue = math.clamp(inputValue, 0, maxDist)
+            featureData.dashDistance = inputValue
+            DistValue.Text = tostring(inputValue)
+            DistSliderFill.Size = UDim2.new(inputValue / maxDist, 0, 1, 0)
+            -- Wert wird automatisch im Heartbeat-Loop gelesen
+        else
+            DistValue.Text = tostring(featureData.dashDistance or 5)
+        end
+    end)
+    
+    DistSliderButton.MouseMoved:Connect(function(x, y)
+        if distDragging then
+            local relativeX = math.clamp((x - DistSliderBack.AbsolutePosition.X) / DistSliderBack.AbsoluteSize.X, 0, 1)
+            local value = math.floor(relativeX * maxDist)
+            featureData.dashDistance = value
+            DistSliderFill.Size = UDim2.new(relativeX, 0, 1, 0)
+            DistValue.Text = tostring(value)
+            -- Wert wird automatisch im Heartbeat-Loop gelesen
+        end
+    end)
+    
+    -- ═══ TOGGLE FUNCTIONALITY ═══
+    ToggleButton.MouseButton1Click:Connect(function()
+        featureData.enabled = not featureData.enabled
+        ToggleButton.Text = featureData.enabled and "ON" or "OFF"
+        ToggleButton.BackgroundColor3 = featureData.enabled and Theme.Success or Theme.Surface
+        
+        local stroke = ToggleButton:FindFirstChild("UIStroke")
+        if stroke then
+            stroke.Color = featureData.enabled and Theme.Success or Theme.Border
+        end
+        
+        ToggleFeature(featureName, featureData.enabled)
+    end)
+    
+    ToggleButton.MouseEnter:Connect(function()
+        Utility.Tween(ToggleButton, {BackgroundTransparency = 0}, 0.2)
+    end)
+    
+    ToggleButton.MouseLeave:Connect(function()
+        Utility.Tween(ToggleButton, {BackgroundTransparency = 0.2}, 0.2)
+    end)
+    
+    return Card
+end
+
+-- Jetzt die Funktion aufrufen:
+CreateDashFeatureCard("DashStrafe", "💨", "Dash Strafe", "Auto strafe left/right", 11, CharacterPage)
 
 -- ═══════════════════════════════════════════════════════════════
 -- PLAYERS PAGE
