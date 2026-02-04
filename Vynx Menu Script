@@ -65,6 +65,25 @@ local Theme = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
+-- PRESET COLORS (GLOBAL)
+-- ═══════════════════════════════════════════════════════════════
+
+local PresetColors = {
+    Color3.fromRGB(138, 43, 226),   -- Lila (Primary)
+    Color3.fromRGB(255, 0, 0),      -- Rot
+    Color3.fromRGB(255, 127, 0),    -- Orange
+    Color3.fromRGB(255, 255, 0),    -- Gelb
+    Color3.fromRGB(0, 255, 0),      -- Grün
+    Color3.fromRGB(0, 255, 255),    -- Cyan
+    Color3.fromRGB(0, 0, 255),      -- Blau
+    Color3.fromRGB(255, 0, 255),    -- Magenta
+    Color3.fromRGB(255, 255, 255),  -- Weiß
+    Color3.fromRGB(200, 200, 200),  -- Hellgrau
+    Color3.fromRGB(128, 128, 128),  -- Grau
+    Color3.fromRGB(0, 0, 0),        -- Schwarz
+}
+
+-- ═══════════════════════════════════════════════════════════════
 -- SETTINGS & CONFIGURATION
 -- ═══════════════════════════════════════════════════════════════
 
@@ -170,6 +189,19 @@ local FeatureStates = {
     dashDistance = 5,  -- Wie weit nach links/rechts
     category = "Character"
     },
+    -- Aim Features
+    Aimbot = {
+        enabled = false,
+        key = Enum.KeyCode.M,
+        value = 100,  -- FOV Circle Radius
+        maxValue = 500,
+        category = "Aim",
+        targetPart = "Head",  -- "Head" oder "Body"
+        circleVisible = true,
+        circleColor = Color3.fromRGB(255, 255, 255),
+        smoothing = false,
+        smoothingAmount = 5
+    },
     -- ESP Features
     ESPHighlight = {
         enabled = false,
@@ -270,12 +302,25 @@ function SettingsManager.Save()
                 enabled = false, -- Niemals enabled-State speichern
                 key = featureData.key and featureData.key.Name or nil,
                 value = featureData.value,
-                dashDistance = featureData.dashDistance or nil,  -- ✅ NEU: Speichere dashDistance
+                dashDistance = featureData.dashDistance or nil,
+                
+                -- ✅ Normale Farbe (ESP Features)
                 color = featureData.color and {
                     R = featureData.color.R,
                     G = featureData.color.G,
                     B = featureData.color.B
-                } or nil
+                } or nil,
+                
+                -- ✅ AIMBOT SPEZIFISCHE SETTINGS
+                circleColor = featureData.circleColor and {
+                    R = featureData.circleColor.R,
+                    G = featureData.circleColor.G,
+                    B = featureData.circleColor.B
+                } or nil,
+                targetPart = featureData.targetPart or nil,
+                circleVisible = featureData.circleVisible,
+                smoothing = featureData.smoothing,
+                smoothingAmount = featureData.smoothingAmount or nil
             }
         end
         
@@ -313,24 +358,57 @@ function SettingsManager.Load()
         if data.Features then
             for featureName, savedData in pairs(data.Features) do
                 if FeatureStates[featureName] then
+                    -- Keybind
                     if savedData.key then
                         FeatureStates[featureName].key = Enum.KeyCode[savedData.key]
                     end
                     
+                    -- Value
                     if savedData.value then
                         FeatureStates[featureName].value = savedData.value
                     end
                     
-                    if savedData.dashDistance then  -- ✅ NEU: Lade dashDistance
+                    -- Dash Distance
+                    if savedData.dashDistance then
                         FeatureStates[featureName].dashDistance = savedData.dashDistance
                     end
                     
+                    -- ✅ Normale Farbe (ESP)
                     if savedData.color then
                         FeatureStates[featureName].color = Color3.new(
                             savedData.color.R,
                             savedData.color.G,
                             savedData.color.B
                         )
+                    end
+                    
+                    -- ✅ AIMBOT CIRCLE COLOR
+                    if savedData.circleColor then
+                        FeatureStates[featureName].circleColor = Color3.new(
+                            savedData.circleColor.R,
+                            savedData.circleColor.G,
+                            savedData.circleColor.B
+                        )
+                    end
+                    
+                    -- ✅ AIMBOT TARGET PART
+                    if savedData.targetPart then
+                        FeatureStates[featureName].targetPart = savedData.targetPart
+                    end
+                    
+                    -- ✅ AIMBOT CIRCLE VISIBLE
+                    if savedData.circleVisible ~= nil then
+                        FeatureStates[featureName].circleVisible = savedData.circleVisible
+                    end
+                    
+                    -- ✅ AIMBOT SMOOTHING
+                    if savedData.smoothing ~= nil then
+                        FeatureStates[featureName].smoothing = savedData.smoothing
+                    end
+                    
+                    -- ✅ AIMBOT SMOOTHING AMOUNT
+                    if savedData.smoothingAmount then
+                        FeatureStates[featureName].smoothingAmount = savedData.smoothingAmount
                     end
                 end
             end
@@ -1811,6 +1889,412 @@ end
 
 -- Global reference
 _G.VynxGodmodeSystem = GodmodeSystem
+
+-- ═══════════════════════════════════════════════════════════════
+-- AIMBOT SYSTEM - MAUS-BASIERT MIT WALL CHECK
+-- Funktioniert NUR wenn Spieler sichtbar ist (keine Wände)
+-- ═══════════════════════════════════════════════════════════════
+
+local AimbotSystem = {
+    enabled = false,
+    fovCircle = nil,
+    connection = nil,
+    currentTarget = nil,
+    lockedTarget = nil,
+    
+    -- Settings
+    fovRadius = 100,
+    targetPart = "Head",
+    smoothing = false,
+    smoothingAmount = 5,
+    circleVisible = true,
+    circleColor = Color3.fromRGB(255, 255, 255),
+    
+    -- Prediction
+    predictionEnabled = true,
+    predictionAmount = 0.13,
+    
+    -- Wall Check
+    wallCheckEnabled = true,  -- ✅ NEU: Wall Check aktiviert
+    
+    -- Current target data
+    currentTargetPosition = nil,
+    currentScreenPosition = nil,
+}
+
+function AimbotSystem:CreateFOVCircle()
+    if self.fovCircle then
+        pcall(function() self.fovCircle:Remove() end)
+    end
+    
+    local circle = Drawing.new("Circle")
+    circle.Thickness = 2
+    circle.NumSides = 64
+    circle.Radius = self.fovRadius
+    circle.Filled = false
+    circle.Transparency = 1
+    circle.Color = self.circleColor
+    circle.Visible = self.circleVisible
+    circle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    
+    self.fovCircle = circle
+    return circle
+end
+
+function AimbotSystem:IsTargetValid(player)
+    if not player or not player.Parent then return false end
+    if not player.Character then return false end
+    
+    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then return false end
+    
+    return true
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- ✅ NEU: WALL CHECK - Prüft ob Spieler wirklich sichtbar ist
+-- ═══════════════════════════════════════════════════════════════
+function AimbotSystem:HasLineOfSight(targetPart)
+    if not self.wallCheckEnabled then return true end
+    if not targetPart then return false end
+    
+    local character = LocalPlayer.Character
+    if not character then return false end
+    
+    -- Start von Kamera Position
+    local startPos = Camera.CFrame.Position
+    local endPos = targetPart.Position
+    
+    -- Erstelle Raycast Parameter
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+    
+    -- Ignoriere eigenen Character und Character des Ziels
+    local ignoreList = {character}
+    if targetPart.Parent then
+        table.insert(ignoreList, targetPart.Parent)
+    end
+    raycastParams.FilterDescendantsInstances = ignoreList
+    
+    -- Ignoriere Transparente/Non-Collidable Parts
+    raycastParams.IgnoreWater = true
+    
+    -- Schieße Raycast
+    local direction = (endPos - startPos)
+    local raycastResult = Services.Workspace:Raycast(startPos, direction, raycastParams)
+    
+    -- Wenn nichts getroffen = freie Sicht
+    if not raycastResult then
+        return true
+    end
+    
+    -- Wenn das getroffene Teil zum Ziel-Character gehört = freie Sicht
+    if raycastResult.Instance then
+        local hitParent = raycastResult.Instance.Parent
+        if hitParent and hitParent == targetPart.Parent then
+            return true
+        end
+        
+        -- Check auch für Accessories
+        if hitParent and hitParent.Parent and hitParent.Parent == targetPart.Parent then
+            return true
+        end
+    end
+    
+    -- Sonst wurde eine Wand getroffen = keine Sicht
+    return false
+end
+
+function AimbotSystem:GetClosestPlayerInFOV()
+    local closestPlayer = nil
+    local shortestDistance = math.huge
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    
+    for _, player in pairs(Services.Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local character = player.Character
+            local targetPart = character:FindFirstChild(self.targetPart)
+            
+            if not targetPart then
+                targetPart = character:FindFirstChild("HumanoidRootPart")
+            end
+            
+            if targetPart then
+                local humanoid = character:FindFirstChildOfClass("Humanoid")
+                if humanoid and humanoid.Health > 0 then
+                    -- ✅ WICHTIG: Prüfe zuerst Sichtlinie
+                    if self:HasLineOfSight(targetPart) then
+                        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                        
+                        if onScreen then
+                            local screenPos2D = Vector2.new(screenPos.X, screenPos.Y)
+                            local distance = (screenPos2D - screenCenter).Magnitude
+                            
+                            if distance <= self.fovRadius and distance < shortestDistance then
+                                shortestDistance = distance
+                                closestPlayer = player
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return closestPlayer
+end
+
+function AimbotSystem:PredictPosition(targetPart)
+    local currentPos = targetPart.Position
+    
+    if self.predictionEnabled then
+        local velocity = targetPart.AssemblyLinearVelocity or targetPart.Velocity or Vector3.zero
+        local predictedPos = currentPos + (velocity * self.predictionAmount)
+        return predictedPos
+    end
+    
+    return currentPos
+end
+
+function AimbotSystem:MoveMouseToTarget(targetPlayer)
+    if not targetPlayer or not targetPlayer.Character then
+        self.currentTargetPosition = nil
+        self.currentScreenPosition = nil
+        return
+    end
+    
+    local targetPart = targetPlayer.Character:FindFirstChild(self.targetPart)
+    if not targetPart then
+        targetPart = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+    end
+    
+    if not targetPart then
+        self.currentTargetPosition = nil
+        self.currentScreenPosition = nil
+        return
+    end
+    
+    -- ✅ DOPPEL-CHECK: Ist Ziel immer noch sichtbar?
+    if not self:HasLineOfSight(targetPart) then
+        self.currentTargetPosition = nil
+        self.currentScreenPosition = nil
+        return
+    end
+    
+    -- Berechne 3D Position mit Prediction
+    local targetPosition = self:PredictPosition(targetPart)
+    self.currentTargetPosition = targetPosition
+    
+    -- Konvertiere zu Screen Position
+    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPosition)
+    
+    if not onScreen then
+        self.currentScreenPosition = nil
+        return
+    end
+    
+    local targetScreenPos = Vector2.new(screenPos.X, screenPos.Y)
+    self.currentScreenPosition = targetScreenPos
+    
+    -- Maus physisch bewegen
+    if mousemoverel then
+        local currentMousePos = Services.UserInputService:GetMouseLocation()
+        local delta = targetScreenPos - currentMousePos
+        
+        -- ✅ FIX: RICHTIGE Smoothing-Berechnung
+        if self.smoothing then
+            -- smoothingAmount: 1 = super langsam, 100 = instant
+            -- Formel: Je HÖHER der Wert, desto SCHNELLER
+            local smoothFactor = self.smoothingAmount / 100
+            delta = delta * smoothFactor
+        end
+        
+        mousemoverel(delta.X, delta.Y)
+    end
+end
+
+function AimbotSystem:IsPlayerShooting()
+    return Services.UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+end
+
+function AimbotSystem:SetupMouseHooks()
+    local mt = getrawmetatable(game)
+    local oldIndex = mt.__index
+    local oldNamecall = mt.__namecall
+    
+    setreadonly(mt, false)
+    
+    mt.__index = newcclosure(function(self, key)
+        if self == LocalPlayer:GetMouse() and AimbotSystem.enabled and AimbotSystem.currentTargetPosition then
+            if key == "Hit" then
+                return CFrame.new(AimbotSystem.currentTargetPosition)
+            end
+            
+            if key == "Target" then
+                if AimbotSystem.currentTarget and AimbotSystem.currentTarget.Character then
+                    local part = AimbotSystem.currentTarget.Character:FindFirstChild(AimbotSystem.targetPart)
+                    if part then return part end
+                end
+            end
+            
+            if key == "X" and AimbotSystem.currentScreenPosition then
+                return AimbotSystem.currentScreenPosition.X
+            end
+            
+            if key == "Y" and AimbotSystem.currentScreenPosition then
+                return AimbotSystem.currentScreenPosition.Y
+            end
+            
+            if key == "UnitRay" then
+                local origin = Camera.CFrame.Position
+                local direction = (AimbotSystem.currentTargetPosition - origin).Unit
+                return Ray.new(origin, direction * 1000)
+            end
+        end
+        
+        return oldIndex(self, key)
+    end)
+    
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        
+        if method == "GetMouseLocation" and AimbotSystem.enabled and AimbotSystem.currentScreenPosition then
+            return AimbotSystem.currentScreenPosition
+        end
+        
+        return oldNamecall(self, ...)
+    end)
+    
+    setreadonly(mt, true)
+    
+    print("[Vynx Aimbot] Mouse Hooks aktiviert")
+end
+
+function AimbotSystem:Enable()
+    if self.enabled then return end
+    
+    self.enabled = true
+    self.fovRadius = FeatureStates.Aimbot.value
+    self.targetPart = FeatureStates.Aimbot.targetPart
+    self.smoothing = FeatureStates.Aimbot.smoothing
+    self.smoothingAmount = FeatureStates.Aimbot.smoothingAmount
+    self.circleVisible = FeatureStates.Aimbot.circleVisible
+    self.circleColor = FeatureStates.Aimbot.circleColor
+    
+    self:CreateFOVCircle()
+    
+    pcall(function()
+        self:SetupMouseHooks()
+    end)
+    
+    print("[Vynx Aimbot] ✅ AKTIVIERT")
+    print("   FOV:", self.fovRadius)
+    print("   Target:", self.targetPart)
+    print("   Smoothing:", self.smoothing and "EIN" or "AUS")
+    print("   🖱️ Maus-Steuerung: EIN")
+    print("   🧱 Wall Check: EIN (Nur sichtbare Ziele)")
+    
+    self.connection = Services.RunService.RenderStepped:Connect(function()
+        if not self.enabled then return end
+        
+        -- Update FOV Circle
+    if self.fovCircle then
+        self.fovCircle.Radius = self.fovRadius
+        self.fovCircle.Color = self.circleColor
+        self.fovCircle.Visible = self.circleVisible
+        self.fovCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    end
+    
+    -- ✅ NEU: Update Smoothing-Settings live
+    self.smoothing = FeatureStates.Aimbot.smoothing
+    self.smoothingAmount = FeatureStates.Aimbot.smoothingAmount
+    
+    if self:IsPlayerShooting() then
+            -- ✅ WICHTIG: Prüfe ob locked target noch sichtbar ist
+            if self.lockedTarget and self:IsTargetValid(self.lockedTarget) then
+                local targetPart = self.lockedTarget.Character:FindFirstChild(self.targetPart) or 
+                                 self.lockedTarget.Character:FindFirstChild("HumanoidRootPart")
+                
+                -- Wenn Target hinter Wand geht = unlock
+                if targetPart and self:HasLineOfSight(targetPart) then
+                    self.currentTarget = self.lockedTarget
+                    self:MoveMouseToTarget(self.lockedTarget)
+                else
+                    -- Target nicht mehr sichtbar = neues suchen
+                    self.lockedTarget = nil
+                    local newTarget = self:GetClosestPlayerInFOV()
+                    if newTarget then
+                        self.lockedTarget = newTarget
+                        self.currentTarget = newTarget
+                        self:MoveMouseToTarget(newTarget)
+                    else
+                        self.currentTarget = nil
+                        self.currentTargetPosition = nil
+                        self.currentScreenPosition = nil
+                    end
+                end
+            else
+                -- Suche neues Target (nur sichtbare)
+                local newTarget = self:GetClosestPlayerInFOV()
+                if newTarget then
+                    self.lockedTarget = newTarget
+                    self.currentTarget = newTarget
+                    self:MoveMouseToTarget(newTarget)
+                else
+                    self.currentTarget = nil
+                    self.currentTargetPosition = nil
+                    self.currentScreenPosition = nil
+                end
+            end
+        else
+            self.lockedTarget = nil
+            self.currentTarget = nil
+            self.currentTargetPosition = nil
+            self.currentScreenPosition = nil
+        end
+    end)
+end
+
+function AimbotSystem:Disable()
+    if not self.enabled then return end
+    
+    self.enabled = false
+    
+    if self.fovCircle then
+        pcall(function() self.fovCircle:Remove() end)
+        self.fovCircle = nil
+    end
+    
+    if self.connection then
+        self.connection:Disconnect()
+        self.connection = nil
+    end
+    
+    self.currentTarget = nil
+    self.lockedTarget = nil
+    self.currentTargetPosition = nil
+    self.currentScreenPosition = nil
+    
+    print("[Vynx Aimbot] ✅ Deaktiviert")
+end
+
+function AimbotSystem:UpdateSettings()
+    self.fovRadius = FeatureStates.Aimbot.value
+    self.targetPart = FeatureStates.Aimbot.targetPart
+    self.smoothing = FeatureStates.Aimbot.smoothing
+    self.smoothingAmount = FeatureStates.Aimbot.smoothingAmount
+    self.circleVisible = FeatureStates.Aimbot.circleVisible
+    self.circleColor = FeatureStates.Aimbot.circleColor
+    
+    if self.fovCircle then
+        self.fovCircle.Radius = self.fovRadius
+        self.fovCircle.Color = self.circleColor
+        self.fovCircle.Visible = self.circleVisible and self.enabled
+    end
+end
+
+-- Global reference
+_G.VynxAimbotSystem = AimbotSystem
 
 -- ═══════════════════════════════════════════════════════════════
 -- DASH/STRAFE SYSTEM - AUTOMATIC LEFT/RIGHT MOVEMENT
@@ -4216,6 +4700,12 @@ function ToggleFeature(featureName, enabled)
         else
             _G.VynxDashStrafeSystem:Disable()
         end
+    elseif featureName == "Aimbot" then
+        if enabled then
+            _G.VynxAimbotSystem:Enable()
+        else
+            _G.VynxAimbotSystem:Disable()
+        end
     end
 end
 
@@ -4263,6 +4753,12 @@ function ApplyFeatureValue(featureName, value)
     elseif featureName == "XRay" then
         if _G.VynxXRaySystem.enabled then
             _G.VynxXRaySystem:UpdateTransparency(value)
+        end
+    
+    elseif featureName == "Aimbot" then
+        FeatureStates.Aimbot.value = value
+        if _G.VynxAimbotSystem.enabled then
+            _G.VynxAimbotSystem:UpdateSettings()
         end
     end
 end
@@ -4827,6 +5323,745 @@ end
 
 -- Jetzt die Funktion aufrufen:
 CreateDashFeatureCard("DashStrafe", "💨", "Dash Strafe", "Auto strafe left/right", 11, CharacterPage)
+
+-- ═══════════════════════════════════════════════════════════════
+-- AIM PAGE
+-- ═══════════════════════════════════════════════════════════════
+
+local AimPage = Utility.Create("ScrollingFrame", {
+    Name = "AimPage",
+    Size = UDim2.new(1, -30, 1, -30),
+    Position = UDim2.new(0, 15, 0, 15),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    ScrollBarImageColor3 = Theme.Primary,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    Visible = false,
+    Parent = MainContent
+})
+
+local AimLayout = Utility.Create("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 15),
+    Parent = AimPage
+})
+
+AimLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    AimPage.CanvasSize = UDim2.new(0, 0, 0, AimLayout.AbsoluteContentSize.Y + 15)
+end)
+
+local AimTitle = Utility.Create("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 40),
+    BackgroundTransparency = 1,
+    Text = "🎯  Aim Assist",
+    TextColor3 = Theme.TextPrimary,
+    TextSize = 22,
+    Font = Enum.Font.GothamBold,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    LayoutOrder = 0,
+    Parent = AimPage
+})
+
+local AimTitleGradient = Utility.Create("UIGradient", {
+    Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0, Theme.Primary),
+        ColorSequenceKeypoint.new(0.5, Theme.TextPrimary),
+        ColorSequenceKeypoint.new(1, Theme.Primary)
+    },
+    Parent = AimTitle
+})
+
+-- Aimbot Card mit allen Optionen
+local function CreateAimbotCard()
+    local featureData = FeatureStates.Aimbot
+    local cardHeight = 650
+    
+    local Card = Utility.Create("Frame", {
+        Name = "AimbotCard",
+        Size = UDim2.new(1, 0, 0, cardHeight),
+        BackgroundColor3 = Theme.BackgroundLight,
+        BackgroundTransparency = 0.3,
+        BorderSizePixel = 0,
+        LayoutOrder = 1,
+        Parent = AimPage
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 12),
+        Parent = Card
+    })
+    
+    Utility.Create("UIStroke", {
+        Color = Theme.Border,
+        Thickness = 1,
+        Transparency = 0.7,
+        Parent = Card
+    })
+    
+    -- Header
+    local Header = Utility.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 50),
+        BackgroundTransparency = 1,
+        Parent = Card
+    })
+    
+    local Icon = Utility.Create("TextLabel", {
+        Size = UDim2.new(0, 35, 0, 35),
+        Position = UDim2.new(0, 15, 0, 8),
+        BackgroundColor3 = Theme.Primary,
+        BackgroundTransparency = 0.8,
+        Text = "🎯",
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 18,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+        Parent = Header
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 8),
+        Parent = Icon
+    })
+    
+    local TitleLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.4, -60, 0, 22),
+        Position = UDim2.new(0, 60, 0, 8),
+        BackgroundTransparency = 1,
+        Text = "Aimbot",
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 16,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Header
+    })
+    
+    local DescLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.4, -60, 0, 16),
+        Position = UDim2.new(0, 60, 0, 28),
+        BackgroundTransparency = 1,
+        Text = "Auto-aim when shooting",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 11,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Header
+    })
+    
+    local ToggleButton = Utility.Create("TextButton", {
+        Size = UDim2.new(0, 70, 0, 35),
+        Position = UDim2.new(1, -85, 0, 8),
+        BackgroundColor3 = featureData.enabled and Theme.Success or Theme.Surface,
+        BackgroundTransparency = 0.2,
+        Text = featureData.enabled and "ON" or "OFF",
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 13,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Parent = Header
+    })
+    
+    -- ✅ Globale Referenz für Keybind-Updates
+    _G.VynxAimbotToggleButton = ToggleButton
+
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 8),
+        Parent = ToggleButton
+    })
+    
+    Utility.Create("UIStroke", {
+        Color = featureData.enabled and Theme.Success or Theme.Border,
+        Thickness = 1,
+        Transparency = 0.5,
+        Parent = ToggleButton
+    })
+    
+    local yPos = 60
+    
+    -- Keybind
+    local KeybindFrame = Utility.Create("Frame", {
+        Size = UDim2.new(1, -30, 0, 50),
+        Position = UDim2.new(0, 15, 0, yPos),
+        BackgroundTransparency = 1,
+        Parent = Card
+    })
+    yPos = yPos + 60
+    
+    local KeybindLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.5, 0, 0, 30),
+        BackgroundTransparency = 1,
+        Text = "Toggle Key (ESC = Clear)",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 11,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = KeybindFrame
+    })
+    
+    local KeybindButton = Utility.Create("TextButton", {
+        Size = UDim2.new(0, 100, 0, 35),
+        Position = UDim2.new(1, -100, 0, 0),
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = 0.3,
+        Text = featureData.key and featureData.key.Name or "None",
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Parent = KeybindFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 8),
+        Parent = KeybindButton
+    })
+    
+    local listeningForKey = false
+    
+    KeybindButton.MouseButton1Click:Connect(function()
+        if not listeningForKey then
+            listeningForKey = true
+            KeybindButton.Text = "Press..."
+            KeybindButton.BackgroundColor3 = Theme.Warning
+        end
+    end)
+    
+    Services.UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if listeningForKey and input.UserInputType == Enum.UserInputType.Keyboard then
+            if input.KeyCode == Enum.KeyCode.Escape then
+                featureData.key = nil
+                KeybindButton.Text = "None"
+                KeybindButton.BackgroundColor3 = Theme.Surface
+                listeningForKey = false
+            else
+                featureData.key = input.KeyCode
+                KeybindButton.Text = input.KeyCode.Name
+                KeybindButton.BackgroundColor3 = Theme.Surface
+                listeningForKey = false
+            end
+        end
+    end)
+    
+    -- FOV Slider
+    local FOVFrame = Utility.Create("Frame", {
+        Size = UDim2.new(1, -30, 0, 60),
+        Position = UDim2.new(0, 15, 0, yPos),
+        BackgroundTransparency = 1,
+        Parent = Card
+    })
+    yPos = yPos + 70
+    
+    local FOVLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.6, 0, 0, 20),
+        BackgroundTransparency = 1,
+        Text = "FOV Circle Radius",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 12,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = FOVFrame
+    })
+    
+    local FOVValue = Utility.Create("TextBox", {
+        Size = UDim2.new(0, 60, 0, 22),
+        Position = UDim2.new(1, -60, 0, -1),
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = 0.5,
+        BorderSizePixel = 0,
+        Text = tostring(featureData.value),
+        TextColor3 = Theme.Primary,
+        TextSize = 13,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ClearTextOnFocus = false,
+        Parent = FOVFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 6),
+        Parent = FOVValue
+    })
+    
+    local FOVSliderBack = Utility.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 8),
+        Position = UDim2.new(0, 0, 0, 35),
+        BackgroundColor3 = Theme.Surface,
+        BorderSizePixel = 0,
+        Parent = FOVFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+        Parent = FOVSliderBack
+    })
+    
+    local FOVSliderFill = Utility.Create("Frame", {
+        Size = UDim2.new(featureData.value / featureData.maxValue, 0, 1, 0),
+        BackgroundColor3 = Theme.Primary,
+        BorderSizePixel = 0,
+        Parent = FOVSliderBack
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+        Parent = FOVSliderFill
+    })
+    
+    Utility.Create("UIGradient", {
+        Color = ColorSequence.new{
+            ColorSequenceKeypoint.new(0, Theme.Primary),
+            ColorSequenceKeypoint.new(1, Theme.PrimaryLight)
+        },
+        Parent = FOVSliderFill
+    })
+    
+    local FOVSliderButton = Utility.Create("TextButton", {
+        Size = UDim2.new(1, 0, 1, 10),
+        Position = UDim2.new(0, 0, 0, -5),
+        BackgroundTransparency = 1,
+        Text = "",
+        Parent = FOVSliderBack
+    })
+    
+    local fovDragging = false
+    
+    FOVSliderButton.MouseButton1Down:Connect(function()
+        fovDragging = true
+    end)
+    
+    Services.UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            fovDragging = false
+        end
+    end)
+    
+    FOVValue.FocusLost:Connect(function()
+        local inputValue = tonumber(FOVValue.Text)
+        if inputValue then
+            inputValue = math.clamp(inputValue, 0, featureData.maxValue)
+            featureData.value = inputValue
+            FOVValue.Text = tostring(inputValue)
+            FOVSliderFill.Size = UDim2.new(inputValue / featureData.maxValue, 0, 1, 0)
+            ApplyFeatureValue("Aimbot", inputValue)
+        else
+            FOVValue.Text = tostring(featureData.value)
+        end
+    end)
+    
+    FOVSliderButton.MouseMoved:Connect(function(x, y)
+        if fovDragging then
+            local relativeX = math.clamp((x - FOVSliderBack.AbsolutePosition.X) / FOVSliderBack.AbsoluteSize.X, 0, 1)
+            local value = math.floor(relativeX * featureData.maxValue)
+            featureData.value = value
+            FOVSliderFill.Size = UDim2.new(relativeX, 0, 1, 0)
+            FOVValue.Text = tostring(value)
+            ApplyFeatureValue("Aimbot", value)
+        end
+    end)
+    
+    -- Target Part Selection
+    local TargetFrame = Utility.Create("Frame", {
+        Size = UDim2.new(1, -30, 0, 50),
+        Position = UDim2.new(0, 15, 0, yPos),
+        BackgroundTransparency = 1,
+        Parent = Card
+    })
+    yPos = yPos + 60
+    
+    local TargetLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.5, 0, 0, 30),
+        BackgroundTransparency = 1,
+        Text = "Target Part",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 11,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = TargetFrame
+    })
+    
+    local HeadButton = Utility.Create("TextButton", {
+        Size = UDim2.new(0, 80, 0, 35),
+        Position = UDim2.new(1, -170, 0, 0),
+        BackgroundColor3 = featureData.targetPart == "Head" and Theme.Primary or Theme.Surface,
+        BackgroundTransparency = 0.3,
+        Text = "Head",
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Parent = TargetFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 8),
+        Parent = HeadButton
+    })
+    
+    local BodyButton = Utility.Create("TextButton", {
+        Size = UDim2.new(0, 80, 0, 35),
+        Position = UDim2.new(1, -80, 0, 0),
+        BackgroundColor3 = featureData.targetPart == "Body" and Theme.Primary or Theme.Surface,
+        BackgroundTransparency = 0.3,
+        Text = "Body",
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Parent = TargetFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 8),
+        Parent = BodyButton
+    })
+    
+    HeadButton.MouseButton1Click:Connect(function()
+        featureData.targetPart = "Head"
+        HeadButton.BackgroundColor3 = Theme.Primary
+        BodyButton.BackgroundColor3 = Theme.Surface
+        if _G.VynxAimbotSystem.enabled then
+            _G.VynxAimbotSystem:UpdateSettings()
+        end
+    end)
+    
+    BodyButton.MouseButton1Click:Connect(function()
+        featureData.targetPart = "HumanoidRootPart"
+        BodyButton.BackgroundColor3 = Theme.Primary
+        HeadButton.BackgroundColor3 = Theme.Surface
+        if _G.VynxAimbotSystem.enabled then
+            _G.VynxAimbotSystem:UpdateSettings()
+        end
+    end)
+    
+    -- Circle Visibility Toggle
+    local VisFrame = Utility.Create("Frame", {
+        Size = UDim2.new(1, -30, 0, 50),
+        Position = UDim2.new(0, 15, 0, yPos),
+        BackgroundTransparency = 1,
+        Parent = Card
+    })
+    yPos = yPos + 60
+    
+    local VisLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.5, 0, 0, 30),
+        BackgroundTransparency = 1,
+        Text = "Circle Visible",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 11,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = VisFrame
+    })
+    
+    local VisButton = Utility.Create("TextButton", {
+        Size = UDim2.new(0, 70, 0, 35),
+        Position = UDim2.new(1, -70, 0, 0),
+        BackgroundColor3 = featureData.circleVisible and Theme.Success or Theme.Surface,
+        BackgroundTransparency = 0.3,
+        Text = featureData.circleVisible and "YES" or "NO",
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Parent = VisFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 8),
+        Parent = VisButton
+    })
+    
+    VisButton.MouseButton1Click:Connect(function()
+        featureData.circleVisible = not featureData.circleVisible
+        VisButton.Text = featureData.circleVisible and "YES" or "NO"
+        VisButton.BackgroundColor3 = featureData.circleVisible and Theme.Success or Theme.Surface
+        if _G.VynxAimbotSystem.enabled then
+            _G.VynxAimbotSystem:UpdateSettings()
+        end
+    end)
+    
+    -- Smoothing Toggle
+    local SmoothFrame = Utility.Create("Frame", {
+        Size = UDim2.new(1, -30, 0, 50),
+        Position = UDim2.new(0, 15, 0, yPos),
+        BackgroundTransparency = 1,
+        Parent = Card
+    })
+    yPos = yPos + 60
+    
+    local SmoothLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.5, 0, 0, 30),
+        BackgroundTransparency = 1,
+        Text = "Smoothing (Less Obvious)",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 11,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = SmoothFrame
+    })
+    
+    local SmoothButton = Utility.Create("TextButton", {
+        Size = UDim2.new(0, 70, 0, 35),
+        Position = UDim2.new(1, -70, 0, 0),
+        BackgroundColor3 = featureData.smoothing and Theme.Success or Theme.Surface,
+        BackgroundTransparency = 0.3,
+        Text = featureData.smoothing and "ON" or "OFF",
+        TextColor3 = Theme.TextPrimary,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Parent = SmoothFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 8),
+        Parent = SmoothButton
+    })
+    
+    -- Smoothing Amount Slider (only visible if smoothing is on)
+    local SmoothAmountFrame = Utility.Create("Frame", {
+        Size = UDim2.new(1, -30, 0, 60),
+        Position = UDim2.new(0, 15, 0, yPos),
+        BackgroundTransparency = 1,
+        Visible = featureData.smoothing,
+        Parent = Card
+    })
+    yPos = yPos + 70
+    
+    SmoothButton.MouseButton1Click:Connect(function()
+    featureData.smoothing = not featureData.smoothing
+    SmoothButton.Text = featureData.smoothing and "ON" or "OFF"
+    SmoothButton.BackgroundColor3 = featureData.smoothing and Theme.Success or Theme.Surface
+    SmoothAmountFrame.Visible = featureData.smoothing  -- ✅ DIESER MACHT DEN SLIDER SICHTBAR
+    if _G.VynxAimbotSystem.enabled then
+        _G.VynxAimbotSystem:UpdateSettings()
+    end
+end)
+    
+    local SmoothAmountLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(0.6, 0, 0, 20),
+        BackgroundTransparency = 1,
+        Text = "Smoothing Amount",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 12,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = SmoothAmountFrame
+    })
+    
+    local SmoothAmountValue = Utility.Create("TextBox", {
+        Size = UDim2.new(0, 60, 0, 22),
+        Position = UDim2.new(1, -60, 0, -1),
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = 0.5,
+        BorderSizePixel = 0,
+        Text = tostring(featureData.smoothingAmount),
+        TextColor3 = Theme.Primary,
+        TextSize = 13,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ClearTextOnFocus = false,
+        Parent = SmoothAmountFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(0, 6),
+        Parent = SmoothAmountValue
+    })
+    
+    local SmoothAmountSliderBack = Utility.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 8),
+        Position = UDim2.new(0, 0, 0, 35),
+        BackgroundColor3 = Theme.Surface,
+        BorderSizePixel = 0,
+        Parent = SmoothAmountFrame
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+        Parent = SmoothAmountSliderBack
+    })
+    
+    local SmoothAmountSliderFill = Utility.Create("Frame", {
+        Size = UDim2.new(featureData.smoothingAmount / 100, 0, 1, 0),
+        BackgroundColor3 = Theme.Primary,
+        BorderSizePixel = 0,
+        Parent = SmoothAmountSliderBack
+    })
+    
+    Utility.Create("UICorner", {
+        CornerRadius = UDim.new(1, 0),
+        Parent = SmoothAmountSliderFill
+    })
+    
+    Utility.Create("UIGradient", {
+        Color = ColorSequence.new{
+            ColorSequenceKeypoint.new(0, Theme.Primary),
+            ColorSequenceKeypoint.new(1, Theme.PrimaryLight)
+        },
+        Parent = SmoothAmountSliderFill
+    })
+    
+    local SmoothAmountSliderButton = Utility.Create("TextButton", {
+        Size = UDim2.new(1, 0, 1, 10),
+        Position = UDim2.new(0, 0, 0, -5),
+        BackgroundTransparency = 1,
+        Text = "",
+        Parent = SmoothAmountSliderBack
+    })
+    
+    local smoothAmountDragging = false
+    
+    SmoothAmountSliderButton.MouseButton1Down:Connect(function()
+        smoothAmountDragging = true
+    end)
+    
+    Services.UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            smoothAmountDragging = false
+        end
+    end)
+    
+    SmoothAmountValue.FocusLost:Connect(function()
+        local inputValue = tonumber(SmoothAmountValue.Text)
+        if inputValue then
+            inputValue = math.clamp(inputValue, 1, 100)
+            featureData.smoothingAmount = inputValue
+            SmoothAmountValue.Text = tostring(inputValue)
+            SmoothAmountSliderFill.Size = UDim2.new(inputValue / 100, 0, 1, 0)
+            if _G.VynxAimbotSystem.enabled then
+                _G.VynxAimbotSystem:UpdateSettings()
+            end
+        else
+            SmoothAmountValue.Text = tostring(featureData.smoothingAmount)
+        end
+    end)
+    
+    SmoothAmountSliderButton.MouseMoved:Connect(function(x, y)
+        if smoothAmountDragging then
+            local relativeX = math.clamp((x - SmoothAmountSliderBack.AbsolutePosition.X) / SmoothAmountSliderBack.AbsoluteSize.X, 0, 1)
+            local value = math.floor(relativeX * 100)
+            if value < 1 then value = 1 end
+            featureData.smoothingAmount = value
+            SmoothAmountSliderFill.Size = UDim2.new(relativeX, 0, 1, 0)
+            SmoothAmountValue.Text = tostring(value)
+            if _G.VynxAimbotSystem.enabled then
+                _G.VynxAimbotSystem:UpdateSettings()
+            end
+        end
+    end)
+    
+    -- Circle Color Picker
+    local ColorPickerFrame = Utility.Create("Frame", {
+        Size = UDim2.new(1, -30, 0, 100),
+        Position = UDim2.new(0, 15, 0, yPos),
+        BackgroundTransparency = 1,
+        Parent = Card
+    })
+    
+    local ColorPickerLabel = Utility.Create("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 20),
+        BackgroundTransparency = 1,
+        Text = "Circle Color",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = 12,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = ColorPickerFrame
+    })
+    
+    local ColorGrid = Utility.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 70),
+        Position = UDim2.new(0, 0, 0, 25),
+        BackgroundTransparency = 1,
+        Parent = ColorPickerFrame
+    })
+    
+    local GridLayout = Utility.Create("UIGridLayout", {
+        CellSize = UDim2.new(0, 35, 0, 35),
+        CellPadding = UDim2.new(0, 5, 0, 5),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = ColorGrid
+    })
+    
+    for i, color in ipairs(PresetColors) do
+        local ColorButton = Utility.Create("TextButton", {
+            Size = UDim2.new(0, 35, 0, 35),
+            BackgroundColor3 = color,
+            Text = "",
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Parent = ColorGrid
+        })
+        
+        Utility.Create("UICorner", {
+            CornerRadius = UDim.new(0, 8),
+            Parent = ColorButton
+        })
+        
+        local Selected = Utility.Create("Frame", {
+            Size = UDim2.new(1, -4, 1, -4),
+            Position = UDim2.new(0, 2, 0, 2),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 3,
+            BorderColor3 = Theme.TextPrimary,
+            Visible = (featureData.circleColor == color),
+            Parent = ColorButton
+        })
+        
+        Utility.Create("UICorner", {
+            CornerRadius = UDim.new(0, 6),
+            Parent = Selected
+        })
+        
+        ColorButton.MouseButton1Click:Connect(function()
+            featureData.circleColor = color
+            
+            for _, btn in pairs(ColorGrid:GetChildren()) do
+                if btn:IsA("TextButton") then
+                    local sel = btn:FindFirstChild("Frame")
+                    if sel then
+                        sel.Visible = (btn.BackgroundColor3 == color)
+                    end
+                end
+            end
+            
+            if _G.VynxAimbotSystem.enabled then
+                _G.VynxAimbotSystem:UpdateSettings()
+            end
+        end)
+    end
+    
+    -- Toggle Button Functionality
+    ToggleButton.MouseButton1Click:Connect(function()
+        featureData.enabled = not featureData.enabled
+        ToggleButton.Text = featureData.enabled and "ON" or "OFF"
+        ToggleButton.BackgroundColor3 = featureData.enabled and Theme.Success or Theme.Surface
+        
+        local stroke = ToggleButton:FindFirstChild("UIStroke")
+        if stroke then
+            stroke.Color = featureData.enabled and Theme.Success or Theme.Border
+        end
+        
+        ToggleFeature("Aimbot", featureData.enabled)
+    end)
+    
+    ToggleButton.MouseEnter:Connect(function()
+        Utility.Tween(ToggleButton, {BackgroundTransparency = 0}, 0.2)
+    end)
+    
+    ToggleButton.MouseLeave:Connect(function()
+        Utility.Tween(ToggleButton, {BackgroundTransparency = 0.2}, 0.2)
+    end)
+end
+
+CreateAimbotCard()
 
 -- ═══════════════════════════════════════════════════════════════
 -- PLAYERS PAGE
@@ -5654,21 +6889,6 @@ local ESPTitleGradient = Utility.Create("UIGradient", {
 -- ═══════════════════════════════════════════════════════════════
 -- ESP FEATURE CARD CREATOR (WITH COLOR PICKER)
 -- ═══════════════════════════════════════════════════════════════
-
-local PresetColors = {
-    Color3.fromRGB(138, 43, 226),   -- Lila (Primary)
-    Color3.fromRGB(255, 0, 0),      -- Rot
-    Color3.fromRGB(255, 127, 0),    -- Orange
-    Color3.fromRGB(255, 255, 0),    -- Gelb
-    Color3.fromRGB(0, 255, 0),      -- Grün
-    Color3.fromRGB(0, 255, 255),    -- Cyan
-    Color3.fromRGB(0, 0, 255),      -- Blau
-    Color3.fromRGB(255, 0, 255),    -- Magenta
-    Color3.fromRGB(255, 255, 255),  -- Weiß
-    Color3.fromRGB(200, 200, 200),  -- Hellgrau
-    Color3.fromRGB(128, 128, 128),  -- Grau
-    Color3.fromRGB(0, 0, 0),        -- Schwarz
-}
 
 local function CreateESPCard(featureName, icon, title, desc, order)
     local featureData = FeatureStates[featureName]
@@ -7137,6 +8357,7 @@ end
 
 local CharacterBtn = CreateNavButton("Character", "🎮", "Character", 0)
 local PlayersBtn = CreateNavButton("Players", "👥", "Players", 1)
+local AimBtn = CreateNavButton("Aim", "🎯", "Aim", 1.5)
 local ESPBtn = CreateNavButton("ESP", "👁️", "ESP", 2)
 local MenuUsersBtn = CreateNavButton("MenuUsers", "💎", "Menu Users", 2.5)
 local SettingsBtn = CreateNavButton("Settings", "⚙️", "Settings", 3)
@@ -7148,6 +8369,7 @@ local SettingsBtn = CreateNavButton("Settings", "⚙️", "Settings", 3)
 local function SwitchTab(tabName)
     CharacterPage.Visible = tabName == "Character"
     PlayersPage.Visible = tabName == "Players"
+    AimPage.Visible = tabName == "Aim"
     ESPPage.Visible = tabName == "ESP"
     MenuUsersPage.Visible = tabName == "MenuUsers"
     SettingsPage.Visible = tabName == "Settings"
@@ -7208,6 +8430,7 @@ PlayersBtn.MouseButton1Click:Connect(function() SwitchTab("Players") end)
 ESPBtn.MouseButton1Click:Connect(function() SwitchTab("ESP") end)
 MenuUsersBtn.MouseButton1Click:Connect(function() SwitchTab("MenuUsers") end)
 SettingsBtn.MouseButton1Click:Connect(function() SwitchTab("Settings") end)
+AimBtn.MouseButton1Click:Connect(function() SwitchTab("Aim") end)
 
 -- ═══════════════════════════════════════════════════════════════
 -- DRAG FUNCTIONALITY
@@ -7312,7 +8535,7 @@ Services.UserInputService.InputBegan:Connect(function(input, gameProcessed)
 end)
 
 -- ═══════════════════════════════════════════════════════════════
--- GLOBAL KEYBIND HANDLER
+-- GLOBAL KEYBIND HANDLER - ALLE FEATURES INKLUSIVE AIMBOT
 -- ═══════════════════════════════════════════════════════════════
 
 Services.UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -7320,31 +8543,58 @@ Services.UserInputService.InputBegan:Connect(function(input, gameProcessed)
     
     for featureName, featureData in pairs(FeatureStates) do
         if featureData.key and input.KeyCode == featureData.key then
+            -- Toggle State
             featureData.enabled = not featureData.enabled
             
-            -- Update UI
-            local targetPage = featureData.category == "ESP" and ESPPage or CharacterPage
-            local cardName = featureName .. "Card"
-            local card = targetPage:FindFirstChild(cardName)
-            
-            if card then
-                local header = card:FindFirstChild("Header")
-                if header then
-                    local toggleBtn = header:FindFirstChild("ToggleButton")
-                    if toggleBtn then
-                        toggleBtn.Text = featureData.enabled and "ON" or "OFF"
-                        toggleBtn.BackgroundColor3 = featureData.enabled and Theme.Success or Theme.Surface
-                        
-                        local stroke = toggleBtn:FindFirstChild("UIStroke")
-                        if stroke then
-                            stroke.Color = featureData.enabled and Theme.Success or Theme.Border
+            -- ✅ SPEZIAL-BEHANDLUNG FÜR AIMBOT
+            if featureName == "Aimbot" then
+                -- Update Button direkt über globale Referenz
+                if _G.VynxAimbotToggleButton then
+                    _G.VynxAimbotToggleButton.Text = featureData.enabled and "ON" or "OFF"
+                    _G.VynxAimbotToggleButton.BackgroundColor3 = featureData.enabled and Theme.Success or Theme.Surface
+                    
+                    local stroke = _G.VynxAimbotToggleButton:FindFirstChild("UIStroke")
+                    if stroke then
+                        stroke.Color = featureData.enabled and Theme.Success or Theme.Border
+                    end
+                end
+                
+                -- Execute Aimbot Toggle
+                ToggleFeature("Aimbot", featureData.enabled)
+                
+            else
+                -- ✅ NORMALE FEATURES (Character, ESP, etc.)
+                -- Bestimme die richtige Page
+                local targetPage = CharacterPage -- Default
+                if featureData.category == "ESP" then
+                    targetPage = ESPPage
+                elseif featureData.category == "Aim" then
+                    targetPage = AimPage
+                end
+                
+                -- Update UI Button
+                local cardName = featureName .. "Card"
+                local card = targetPage:FindFirstChild(cardName)
+                
+                if card then
+                    local header = card:FindFirstChild("Header")
+                    if header then
+                        local toggleBtn = header:FindFirstChild("ToggleButton")
+                        if toggleBtn then
+                            toggleBtn.Text = featureData.enabled and "ON" or "OFF"
+                            toggleBtn.BackgroundColor3 = featureData.enabled and Theme.Success or Theme.Surface
+                            
+                            local stroke = toggleBtn:FindFirstChild("UIStroke")
+                            if stroke then
+                                stroke.Color = featureData.enabled and Theme.Success or Theme.Border
+                            end
                         end
                     end
                 end
+                
+                -- Execute Feature Toggle
+                ToggleFeature(featureName, featureData.enabled)
             end
-            
-            -- Execute toggle
-            ToggleFeature(featureName, featureData.enabled)
         end
     end
 end)
